@@ -5,7 +5,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse, RedirectResponse
 
-from .routers import engine, market, parameters, products, simulations, uploads
+from .routers import agent, engine, market, parameters, products, simulations, uploads
 from .store import Store, StoreDep, init_db
 
 
@@ -42,8 +42,9 @@ def invalid_request(request, exc: RequestValidationError):
     return JSONResponse({'detail': [{'type': e['type'], 'loc': list(e['loc']), 'msg': e['msg']} for e in exc.errors()]}, status_code=422)
 
 
-for r in (products, market, parameters, uploads, engine, simulations):
+for r in (products, market, parameters, uploads, engine, simulations, agent):
     app.include_router(r.router, prefix='/api')
+
 
 
 @app.post('/api/reset', status_code=204, tags=['System'], summary='Delete everything and reload the demo data (products, uploads, parameters, simulations)')

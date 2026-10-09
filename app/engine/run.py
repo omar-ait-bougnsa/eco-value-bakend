@@ -9,7 +9,11 @@ from ..schemas import (
     CarbonScenario, CostLine, Flag, FlagAction, InputChange, MethodResult, Parameters, Product, ProductResult,
     RampPoint, RunInput, RunOutput, Snapshot, UploadRecord, WaterfallStep,
 )
+from .cost import calc_raw_material_cost, calc_unit_costs
+from .margin import calc_cgm, calc_nutrient_cgms, calc_ramp, calc_waterfall, calc_carbon_scenarios
+from .methods import calc_cost_plus, calc_market_pricing, calc_ref_minus, calc_value_pricing
 from .period import CURRENT_YEAR, Span, blend_snapshot, fmt_day, touches_current_year
+from .types import AgronomyData
 
 
 @dataclass
@@ -78,45 +82,60 @@ def run_product(input: RunInput, ctx: Ctx, product_id: str) -> ProductResult:
     snap = resolve_snapshot(ctx, input.periodFrom, input.periodTo)
 
     lines = cost_lines(p.recipe, snap)
-    raw_material = sum(l.usd for l in lines)
-    dna = input.dnaPerTon if input.fullCost else 0
-    marketing = input.marketingPct * (raw_material + dna)
-    cost_for_margin = raw_material + dna
-    unit_cost = cost_for_margin + marketing
+    raw_material = calc_raw_material_cost(lines)
+    dna, marketing, cost_for_margin, unit_cost = calc_unit_costs(
+        raw_material=raw_material,
+        dna_per_ton=input.dnaPerTon,
+        include_dna=input.fullCost,
+        marketing_pct=input.marketingPct,
+    )
 
     ref_price = ref_price_for(snap, input.referenceId, input.priceType)
-    ref_raw = sum(l.usd for l in cost_lines(ref.recipe, snap)) + dna
+    ref_raw_lines = cost_lines(ref.recipe, snap)
+    ref_raw = calc_raw_material_cost(ref_raw_lines) + (input.dnaPerTon if input.fullCost else 0)
     ref_cost = input.refCostOverride if input.refCostOverride is not None and snap.id == 'today' else ref_raw
 
-    # nutrient unit values (USD / t nutrient)
-    v_n = snap.inputs['ammonia'] / N_PER_AMMONIA
-    v_k = snap.inputs['kcl'] / K2O_PER_KCL
-    v_s = snap.inputs['sulphur']
-    rc, nc = ref.composition, p.composition
+    # 4 pricing methods via modular engine
+    p2o5_value_ref, ref_minus = calc_ref_minus(
+        ref_price=ref_price,
+        ref_comp=ref.composition,
+        new_comp=p.composition,
+        nutrient_prices=snap.inputs,
+        n_per_nh3=N_PER_AMMONIA,
+        k2o_per_kcl=K2O_PER_KCL,
+    )
 
-    p2o5_value_ref = ref_minus = None
-    if ref_price is not None and rc.P2O5 > 0:
-        pure_p = ref_price - rc.N * v_n - rc.K2O * v_k - rc.S * v_s
-        p2o5_value_ref = pure_p / rc.P2O5
-        ref_minus = nc.P2O5 * p2o5_value_ref + nc.N * v_n + nc.K2O * v_k + nc.S * v_s
+    agro_data = AgronomyData(
+        yield_gain=input.yieldGain,
+        app_rate_new=input.appRateNew,
+        app_rate_ref=input.appRateRef,
+        crop_price=input.cropPrice,
+    ) if input.appRateNew > 0 else None
 
-    added_crop = input.yieldGain / input.appRateNew if input.appRateNew > 0 else 0
-    added_value = added_crop * input.cropPrice
-    carbon_saving_per_ha = input.pcfRef * input.appRateRef - input.pcfNew * input.appRateNew
-    carbon_saving_per_t = carbon_saving_per_ha / input.appRateNew if input.appRateNew > 0 else 0
-    carbon_effect = carbon_saving_per_t * input.carbonPrice
-    value = added_value * input.valueShare + carbon_effect + ref_price if ref_price is not None else None
-    cost_plus = unit_cost * (1 + input.costPlusMargin)
+    added_value, carbon_saving_per_t, carbon_effect, value = calc_value_pricing(
+        ref_price=ref_price,
+        agronomy=agro_data,
+        pcf_ref=input.pcfRef,
+        pcf_new=input.pcfNew,
+        carbon_price=input.carbonPrice,
+        value_share=input.valueShare,
+        mode='corrected',
+    )
+    cost_plus = calc_cost_plus(unit_cost, input.costPlusMargin)
+    market_price = calc_market_pricing(input.benchmark)
 
-    prices = {'costPlus': cost_plus, 'market': input.benchmark, 'value': value, 'refMinus': ref_minus}
+    prices = {'costPlus': cost_plus, 'market': market_price, 'value': value, 'refMinus': ref_minus}
     anchor_price = next((x for x in (prices[input.anchor], ref_minus) if x is not None), cost_plus)
     floor = cost_plus
     ceiling = value if value is not None else cost_plus
 
-    cgm_of = lambda price: None if price is None else price - unit_cost + marketing
+    # Legacy workbook CGM compatibility for run.py
+    cgm_of = lambda price: calc_cgm(price, unit_cost, marketing, mode='workbook')
     cgm_ref = ref_price - ref_cost if ref_price is not None else None
     volume = input.addressable * input.marketShare
     cgm = cgm_of(anchor_price)
+
+    cgm_p2o5, cgm_s = calc_nutrient_cgms(cgm, p.composition.P2O5, p.recipe.get('sulphur', 0.0))
 
     methods = []
     for m in ('costPlus', 'refMinus', 'value', 'market'):
@@ -125,40 +144,39 @@ def run_product(input: RunInput, ctx: Ctx, product_id: str) -> ProductResult:
         c = cgm_of(prices[m])
         methods.append(MethodResult(
             method=m, label=METHOD_LABEL[m], price=prices[m], cgm=c,
-            cgmP2O5=c / nc.P2O5 if c is not None and nc.P2O5 > 0 else None,
+            cgmP2O5=c / p.composition.P2O5 if c is not None and p.composition.P2O5 > 0 else None,
             totalMargin=c * volume if c is not None else None,
             deltaVsRef=c - cgm_ref if c is not None and cgm_ref is not None else None,
         ))
 
-    waterfall = []
-    if cgm_ref is not None and anchor_price is not None and ref_price is not None and cgm is not None:
-        d_price = anchor_price - ref_price
-        d_cost = ref_cost - cost_for_margin
-        waterfall = [
-            WaterfallStep(label=f'{ref.name} CGM', from_=0, to=cgm_ref, value=cgm_ref, kind='total'),
-            WaterfallStep(label=f'Price vs {ref.name}', from_=cgm_ref, to=cgm_ref + d_price, value=d_price, kind='delta'),
-            WaterfallStep(label='Raw-material savings', from_=cgm_ref + d_price, to=cgm_ref + d_price + d_cost, value=d_cost, kind='delta'),
-            WaterfallStep(label='New product CGM', from_=0, to=cgm, value=cgm, kind='total'),
-        ]
+    waterfall = calc_waterfall(
+        ref_name=ref.name,
+        cgm_ref=cgm_ref,
+        anchor_price=anchor_price,
+        ref_price=ref_price,
+        ref_cost=ref_cost,
+        cost_for_margin=cost_for_margin,
+        cgm=cgm,
+    )
+    ramp = calc_ramp(volume, current_year=CURRENT_YEAR, ramp_target_year=input.rampTargetYear)
+    carbon_scenarios = [
+        CarbonScenario(id=i, label=l, price=pr, delta=carbon_saving_per_t * pr)
+        for i, l, pr in CARBON_SCENARIOS
+    ]
 
-    ramp = []
-    for year in range(CURRENT_YEAR, CURRENT_YEAR + 10):
-        t = min(max((year - CURRENT_YEAR) / max(input.rampTargetYear - CURRENT_YEAR, 1), 0), 1)
-        ramp.append(RampPoint(year=year, kt=volume * t / 1000))
-
-    sulphur = p.recipe.get('sulphur', 0)
     return ProductResult(
         productId=product_id, name=p.name, lines=lines, rawMaterial=raw_material, dna=dna, marketing=marketing,
         unitCost=unit_cost, refPrice=ref_price, refCost=ref_cost, p2o5ValueRef=p2o5_value_ref,
         addedValue=added_value, carbonSavingPerT=carbon_saving_per_t, carbonEffect=carbon_effect,
         prices=prices, anchorPrice=anchor_price, floor=floor, ceiling=ceiling,
         cgm=cgm, cgmRef=cgm_ref,
-        cgmP2O5=cgm / nc.P2O5 if cgm is not None and nc.P2O5 > 0 else None,
-        cgmS=cgm / sulphur if cgm is not None and sulphur > 0 else None,
+        cgmP2O5=cgm_p2o5,
+        cgmS=cgm_s,
         volume=volume, totalMargin=cgm * volume if cgm is not None else None,
         methods=methods, waterfall=waterfall, ramp=ramp,
-        carbonScenarios=[CarbonScenario(id=i, label=l, price=pr, delta=carbon_saving_per_t * pr) for i, l, pr in CARBON_SCENARIOS],
+        carbonScenarios=carbon_scenarios,
     )
+
 
 
 def _f2(n: float) -> str:

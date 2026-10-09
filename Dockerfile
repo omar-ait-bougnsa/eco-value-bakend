@@ -9,8 +9,10 @@ COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
 COPY app ./app
+COPY tests ./tests
 
-RUN useradd --system --no-create-home api
+RUN useradd --system --no-create-home api && \
+    chown -R api:api /srv
 USER api
 
 EXPOSE 8000

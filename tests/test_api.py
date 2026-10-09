@@ -137,3 +137,13 @@ def test_resolve_snapshot_and_presets():
     assert set(r['weights']) == {'2024', '2025'} and r['snapshot']['id'] == 'period'
     assert client.get('/api/snapshots/2025').json()['inputs']['sulphur'] == 299.2
     assert [p['id'] for p in client.get('/api/periods/presets').json()][:3] == ['ytd', 'l12', '2025']
+
+
+def test_engine_sensitivity_endpoint():
+    r = client.post('/api/engine/sensitivity', json={}).json()
+    assert len(r['points']) == 19
+    bes = {(b['productId'], b['kind']): b['sulphurPrice'] for b in r['breakEvens']}
+    assert bes[('phos-65-35', 'zero_margin')] == pytest.approx(918.86, abs=0.01)
+    assert bes[('TSP', 'zero_margin')] == pytest.approx(870.41, abs=0.01)
+    assert bes[('phos-65-35', 'crossover')] == pytest.approx(848.46, abs=0.01)
+

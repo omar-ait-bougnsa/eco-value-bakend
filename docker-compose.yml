@@ -26,6 +26,9 @@ services:
     build: .
     environment:
       DATABASE_URL: postgresql+psycopg://eco:eco@db:5432/eco
+      openrouter_api_key: ${openrouter_api_key:-}
+      OPENROUTER_API_KEY: ${OPENROUTER_API_KEY:-}
+      LLM_ENABLED: ${LLM_ENABLED:-true}
     ports:
       - "127.0.0.1:${API_PORT:-8000}:8000" # this machine only: the API has no authentication yet
     depends_on:

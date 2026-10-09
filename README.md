@@ -53,4 +53,4 @@ tests/           Golden values from src/engine/engine.test.ts + endpoint tests
 - There are no migrations yet: after changing a table in `db.py`, recreate the database (`docker compose down -v`).
 - "Today" is fixed to 2 Oct 2026 (`TODAY` in `app/data/seed.py`), the date the seeded 2026 snapshot runs to.
 - `POST /api/uploads/detect` reads the filename and size only; file contents are not parsed yet.
-- No agent / chat endpoints yet.
+- Agent and chat streaming are implemented under `/api/agent` and `/api/simulations/{id}/messages` (see `agent.md`).
