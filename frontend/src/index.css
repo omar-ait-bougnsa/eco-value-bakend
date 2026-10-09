@@ -1,0 +1,203 @@
+@import "tailwindcss";
+@import "tw-animate-css";
+
+@custom-variant dark (&:is(.dark *));
+
+:root {
+  --radius: 0.5rem;
+  --background: #ffffff;
+  --foreground: #14201a;
+  --card: #ffffff;
+  --card-foreground: #14201a;
+  --popover: #ffffff;
+  --popover-foreground: #14201a;
+  --primary: #2d7a35;
+  --primary-foreground: #ffffff;
+  --secondary: #eceee9;
+  --secondary-foreground: #14201a;
+  --muted: #eceee9;
+  --muted-foreground: #56645b;
+  --accent: #e7efe6;
+  --accent-foreground: #1e3a23;
+  --destructive: #b3261e;
+  --border: #dcdfd8;
+  --input: #dcdfd8;
+  --ring: #9fae9c;
+  --sidebar: #14201a;
+  --sidebar-foreground: #e8ece6;
+  --sidebar-primary: #2d7a35;
+  --sidebar-primary-foreground: #ffffff;
+  --sidebar-accent: #1d2b22;
+  --sidebar-accent-foreground: #f6f7f4;
+  --sidebar-border: #253228;
+  --sidebar-ring: #3d5440;
+  --subtle: #56645b;
+  --action: #2d7a35;
+  --action-foreground: #ffffff;
+  --anchor: #8a5a1c;
+  --anchor-bg: #f5ead9;
+  --reference: #8a948e;
+  --reference-bg: #eef0ec;
+  --info: #1f5ea8;
+  --info-bg: #e3edf8;
+  --warning-fg: #8f5200;
+  --warning-bg: #fdf0db;
+  --warning-dot: #d98a1f;
+  --danger-fg: #b3261e;
+  --danger-bg: #fbe4e2;
+  --danger-dot: #d9453c;
+  --chart-1: #2d7a35;
+  --chart-2: #5b9c62;
+  --chart-3: #9bc29f;
+  --chart-4: #cfe2d0;
+}
+
+.dark {
+  --background: #10160f;
+  --foreground: #eef1ea;
+  --card: #161d15;
+  --card-foreground: #eef1ea;
+  --popover: #161d15;
+  --popover-foreground: #eef1ea;
+  --primary: #4f9c57;
+  --primary-foreground: #0d150d;
+  --secondary: #202a1f;
+  --secondary-foreground: #eef1ea;
+  --muted: #1b241a;
+  --muted-foreground: #9db09a;
+  --accent: #202e20;
+  --accent-foreground: #d7ead6;
+  --destructive: #f2887f;
+  --border: #283327;
+  --input: #283327;
+  --ring: #4a5f48;
+  --sidebar: #0c120b;
+  --sidebar-foreground: #e4e9e0;
+  --sidebar-primary: #4f9c57;
+  --sidebar-primary-foreground: #0d150d;
+  --sidebar-accent: #1a241a;
+  --sidebar-accent-foreground: #f1f4ec;
+  --sidebar-border: #202b20;
+  --sidebar-ring: #3d5440;
+  --subtle: #8a9a87;
+  --action: #4f9c57;
+  --action-foreground: #0d150d;
+  --anchor: #d19a52;
+  --anchor-bg: #2a2110;
+  --reference: #8d9a89;
+  --reference-bg: #1c231b;
+  --info: #6ca2d9;
+  --info-bg: #11202f;
+  --warning-fg: #e2a73f;
+  --warning-bg: #2a2110;
+  --warning-dot: #e2a73f;
+  --danger-fg: #f2887f;
+  --danger-bg: #2a1512;
+  --danger-dot: #f2887f;
+  --chart-1: #4f9c57;
+  --chart-2: #3f7f49;
+  --chart-3: #345f3d;
+  --chart-4: #294b32;
+}
+
+@theme inline {
+  --font-sans: 'IBM Plex Sans Variable', 'IBM Plex Sans', ui-sans-serif, system-ui, sans-serif;
+  --font-mono: 'IBM Plex Mono', ui-monospace, monospace;
+  --radius-sm: calc(var(--radius) - 2px);
+  --radius-md: var(--radius);
+  --radius-lg: calc(var(--radius) + 2px);
+  --radius-xl: calc(var(--radius) + 6px);
+  --color-background: var(--background);
+  --color-foreground: var(--foreground);
+  --color-card: var(--card);
+  --color-card-foreground: var(--card-foreground);
+  --color-popover: var(--popover);
+  --color-popover-foreground: var(--popover-foreground);
+  --color-primary: var(--primary);
+  --color-primary-foreground: var(--primary-foreground);
+  --color-secondary: var(--secondary);
+  --color-secondary-foreground: var(--secondary-foreground);
+  --color-muted: var(--muted);
+  --color-muted-foreground: var(--muted-foreground);
+  --color-accent: var(--accent);
+  --color-accent-foreground: var(--accent-foreground);
+  --color-destructive: var(--destructive);
+  --color-border: var(--border);
+  --color-input: var(--input);
+  --color-ring: var(--ring);
+  --color-sidebar: var(--sidebar);
+  --color-sidebar-foreground: var(--sidebar-foreground);
+  --color-sidebar-primary: var(--sidebar-primary);
+  --color-sidebar-primary-foreground: var(--sidebar-primary-foreground);
+  --color-sidebar-accent: var(--sidebar-accent);
+  --color-sidebar-accent-foreground: var(--sidebar-accent-foreground);
+  --color-sidebar-border: var(--sidebar-border);
+  --color-sidebar-ring: var(--sidebar-ring);
+  --color-subtle: var(--subtle);
+  --color-action: var(--action);
+  --color-action-foreground: var(--action-foreground);
+  --color-anchor: var(--anchor);
+  --color-anchor-bg: var(--anchor-bg);
+  --color-reference: var(--reference);
+  --color-reference-bg: var(--reference-bg);
+  --color-info: var(--info);
+  --color-info-bg: var(--info-bg);
+  --color-warning-fg: var(--warning-fg);
+  --color-warning-bg: var(--warning-bg);
+  --color-warning-dot: var(--warning-dot);
+  --color-danger-fg: var(--danger-fg);
+  --color-danger-bg: var(--danger-bg);
+  --color-danger-dot: var(--danger-dot);
+  --color-chart-1: var(--chart-1);
+  --color-chart-2: var(--chart-2);
+  --color-chart-3: var(--chart-3);
+  --color-chart-4: var(--chart-4);
+}
+
+@layer base {
+  * { @apply border-border outline-ring/50; }
+  html, body, #root { height: 100%; }
+  body { @apply bg-background text-foreground font-sans antialiased; font-size: 14px; letter-spacing: -0.003em; }
+  .num { font-family: var(--font-mono); font-variant-numeric: tabular-nums; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after { animation-duration: 0.01ms !important; transition-duration: 0.01ms !important; }
+}
+
+/* Mascot — pivots are in SVG user units so each part turns from its natural joint. */
+.mascot-smile-big { opacity: 0; }
+.mascot-shadow { fill: color-mix(in oklab, var(--foreground) 14%, transparent); }
+.mascot-animated { cursor: pointer; }
+.mascot-animated :is(.mascot-breathe, .mascot-leaf-left, .mascot-leaf-right) { transform-box: view-box; }
+.mascot-animated .mascot-breathe { transform-origin: 185px 440px; animation: mascot-breathe 2.6s ease-in-out infinite; }
+.mascot-animated .mascot-leaf-left { transform-origin: 186px 148px; animation: mascot-sway-l 3.2s ease-in-out infinite; }
+.mascot-animated .mascot-leaf-right { transform-origin: 188px 148px; animation: mascot-sway-r 3.2s ease-in-out infinite; }
+.mascot-animated .mascot-eyes { transform-box: fill-box; transform-origin: center; animation: mascot-blink 4.2s ease-in-out infinite; }
+.mascot-animated .mascot-cheek { animation: mascot-blush 3s ease-in-out infinite; }
+.mascot-animated :is(.mascot-smile, .mascot-smile-big) { transition: opacity 0.2s; }
+
+/* Happy state: hover, or a click (adds .mascot-happy for a moment). */
+.mascot-animated:is(:hover, .mascot-happy) :is(.mascot-leaf-left, .mascot-leaf-right) { animation-duration: 0.7s; }
+.mascot-animated:is(:hover, .mascot-happy) .mascot-smile { opacity: 0; }
+.mascot-animated:is(:hover, .mascot-happy) .mascot-smile-big { opacity: 1; }
+.mascot-animated:is(:hover, .mascot-happy) .mascot-cheek { animation: none; opacity: 1; }
+
+@keyframes mascot-breathe { 0%, 100% { transform: scale(1, 1); } 50% { transform: scale(1.025, 1.035); } }
+@keyframes mascot-sway-l { 0%, 100% { transform: rotate(-4deg); } 50% { transform: rotate(6deg); } }
+@keyframes mascot-sway-r { 0%, 100% { transform: rotate(5deg); } 50% { transform: rotate(-5deg); } }
+@keyframes mascot-blink { 0%, 91%, 97%, 100% { transform: scaleY(1); } 94% { transform: scaleY(0.08); } }
+@keyframes mascot-blush { 0%, 100% { opacity: 0.75; } 50% { opacity: 1; } }
+
+/* Data tables — one look for every table: larger text, a full grid of row and column lines, a tinted header.
+   Unlayered on purpose so it wins over per-cell utility classes. */
+.tbl { border-collapse: collapse; font-size: 0.9375rem; line-height: 1.375rem; }
+.tbl th, .tbl td { border: 1px solid var(--border); padding: 0.625rem 0.875rem; font-size: 0.9375rem; vertical-align: middle; }
+.tbl thead th { background: var(--muted); color: var(--foreground); font-size: 0.875rem; font-weight: 600; white-space: nowrap; }
+.tbl tbody tr:hover > td { background-color: color-mix(in oklab, var(--accent) 55%, var(--card)); }
+.tbl td { white-space: nowrap; }
+/* Inside a container that already draws the outer border. */
+.tbl-flush tr > :first-child { border-left-width: 0; }
+.tbl-flush tr > :last-child { border-right-width: 0; }
+.tbl-flush thead tr:first-child > * { border-top-width: 0; }
+.tbl-flush tbody tr:last-child > * { border-bottom-width: 0; }

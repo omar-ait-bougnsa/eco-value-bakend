@@ -1,0 +1,84 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>Plant mascot</title>
+<style>
+  html, body { height: 100%; margin: 0; }
+  body { display: grid; place-items: center; background: #F7F7F5; }
+
+  .mascot { width: min(80vw, 400px); height: auto; display: block; overflow: visible; cursor: pointer; }
+
+  /* Pivots are given in SVG user units, so every part turns around its natural joint. */
+  .mascot * { transform-box: view-box; }
+
+  /* 2. Breathing: the whole plant grows from where it meets the pot. */
+  .breathe { transform-origin: 200px 352px; animation: breathe 2.5s ease-in-out infinite; }
+  @keyframes breathe { 0%, 100% { transform: scale(1); } 50% { transform: scale(1.03); } }
+
+  /* 1. Leaves sway from the top of the stem, in opposite rhythm. */
+  .leaf { transform-origin: 200px 96px; animation: sway 3s ease-in-out infinite; }
+  .leaf-right { animation-delay: -1.5s; }
+  @keyframes sway { 0%, 100% { transform: rotate(-8deg); } 50% { transform: rotate(8deg); } }
+
+  /* 3. Blink: a quick squash every 4 seconds. */
+  .eye { transform-box: fill-box; transform-origin: center; animation: blink 4s infinite; }
+  @keyframes blink { 0%, 94%, 100% { transform: scaleY(1); } 97% { transform: scaleY(0.1); } }
+
+  /* 4. Arm wave: three waves from the shoulder, then a rest. */
+  .arm { transform-origin: 118px 258px; animation: wave 6s ease-in-out infinite; }
+  @keyframes wave {
+    0%, 36%, 100% { transform: rotate(0deg); }
+    6%, 18%, 30% { transform: rotate(-26deg); }
+    12%, 24% { transform: rotate(6deg); }
+  }
+
+  /* 5. Cheeks: a soft blush pulse. */
+  .cheek { animation: blush 3s ease-in-out infinite; }
+  @keyframes blush { 0%, 100% { opacity: 0.7; } 50% { opacity: 1; } }
+
+  /* 6. Hover: happy bounce, wider smile, faster leaves. The pot is outside .character, so it stays put. */
+  .mouth { transform-box: fill-box; transform-origin: center; transition: transform 200ms ease-out; }
+  .mascot:hover .character { animation: bounce 0.6s ease-in-out infinite; }
+  .mascot:hover .mouth { transform: scale(1.4, 1.25); }
+  .mascot:hover .leaf { animation-duration: 0.7s; }
+  @keyframes bounce { 0%, 100% { transform: translateY(0); } 45% { transform: translateY(-10px); } }
+
+  @media (prefers-reduced-motion: reduce) {
+    .mascot * { animation: none !important; transition: none !important; }
+  }
+</style>
+</head>
+<body>
+  <svg class="mascot" viewBox="0 0 400 440" role="img" aria-label="A smiling plant mascot in a pot, waving">
+    <g class="character">
+      <g class="breathe">
+        <!-- Leaves and stem -->
+        <path class="leaf leaf-left" fill="#6DB33F" d="M200 96 C168 102 126 84 108 32 C158 26 198 54 200 96 Z" />
+        <path class="leaf leaf-right" fill="#2E7D32" d="M200 96 C234 104 282 82 300 22 C246 18 200 50 200 96 Z" />
+        <line x1="200" y1="94" x2="200" y2="128" stroke="#2E7D32" stroke-width="14" stroke-linecap="round" />
+
+        <!-- Arm (drawn before the body so the joint is hidden) -->
+        <g class="arm">
+          <ellipse cx="102" cy="240" rx="16" ry="26" fill="#6DB33F" transform="rotate(-35 102 240)" />
+        </g>
+
+        <!-- Body -->
+        <path fill="#6DB33F" d="M200 120 C260 120 292 186 292 262 C292 320 255 352 200 352 C145 352 108 320 108 262 C108 186 140 120 200 120 Z" />
+
+        <!-- Face -->
+        <ellipse class="cheek" cx="146" cy="258" rx="15" ry="9" fill="#C8A876" />
+        <ellipse class="cheek" cx="254" cy="258" rx="15" ry="9" fill="#C8A876" />
+        <circle class="eye" cx="168" cy="228" r="11" fill="#0F1F1A" />
+        <circle class="eye" cx="232" cy="228" r="11" fill="#0F1F1A" />
+        <path class="mouth" d="M186 256 Q200 270 214 256" fill="none" stroke="#0F1F1A" stroke-width="6" stroke-linecap="round" />
+      </g>
+    </g>
+
+    <!-- Pot: in front of the body, outside the animated group -->
+    <path fill="#D9C49A" d="M108 362 H292 L277 424 Q275 432 267 432 H133 Q125 432 123 424 Z" />
+    <rect x="90" y="330" width="220" height="34" rx="10" fill="#8B5A1E" />
+  </svg>
+</body>
+</html>

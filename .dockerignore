@@ -1,0 +1,8 @@
+.venv
+.git
+__pycache__
+.pytest_cache
+*.md
+!engine.md
+docker-compose.yml
+.env
