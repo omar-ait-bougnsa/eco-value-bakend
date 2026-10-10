@@ -10,12 +10,13 @@ import { Mascot } from './Mascot'
 import { SIDEBAR, useSidebar } from './use-sidebar'
 import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip'
 import { toast } from 'sonner'
+import { differenceInCalendarDays } from 'date-fns'
 
 function group(createdAt: string): string {
-  const d = createdAt.slice(0, 10)
-  if (d === '2026-10-02') return 'Today'
-  if (d === '2026-10-01') return 'Yesterday'
-  if (d >= '2026-09-25') return 'Previous 7 days'
+  const days = differenceInCalendarDays(new Date(), new Date(createdAt))
+  if (days <= 0) return 'Today'
+  if (days === 1) return 'Yesterday'
+  if (days <= 7) return 'Previous 7 days'
   return 'Older'
 }
 

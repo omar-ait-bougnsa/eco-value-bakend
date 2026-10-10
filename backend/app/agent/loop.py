@@ -1,20 +1,27 @@
 """Async agent loop (router → llm ⇄ tools → checker → template)."""
 import asyncio
 import json
+import logging
 import os
+import time
 from typing import Any, AsyncIterator
 from uuid import uuid4
 
 import httpx
+from fastapi import HTTPException
 
+from ..limits import FieldError
 from ..rag import documents
 from ..store import Store
 from .checker import ValidationResult, render_fallback_template, validate_agent_text
 from .citations import cited, knowledge_answer
 from .fallback import run_scripted_turn
-from .router import get_openrouter_api_key, record_llm_failure, record_llm_success
+from .router import get_openrouter_api_key, record_llm_failure, record_llm_success, record_llm_turn
 from .tools import (
     TOOL_DEFINITIONS,
+    tool_get_product,
+    tool_list_products,
+    validate_tool_call,
     tool_ask_user,
     tool_check_inputs,
     tool_compare_runs,
@@ -45,7 +52,8 @@ CRITICAL RULES:
 1. THE CODE CALCULATES. THE HUMAN DECIDES. YOU EXPLAIN.
 2. NEVER calculate numbers or margins yourself. All numbers must come from engine tools.
 3. When prices, costs, or margins are quoted, always mention the unit (USD/t).
-4. Do not apply input changes directly: propose them using the `stage_change` tool.
+4. Do not apply input changes directly: propose them using the `stage_change` tool. You never save anything: `run_engine` is a preview the user confirms.
+   For a question about a product (what it is, its recipe, composition or cost), call `get_product`.
 5. If the user must choose between options (e.g. Netback vs FOB), use the `ask_user` tool with option chips.
 6. Tone: concise, professional, direct, units on every figure. Never invent numbers.
 7. KNOWLEDGE: when explaining WHY a price, freight rate or yield assumption was chosen, or when asked what a report,
@@ -54,6 +62,26 @@ CRITICAL RULES:
    that is not in the retrieved passages; if they do not answer the question, say so.
    Figures used in a calculation still come from the engine tools, not from passages.
 """
+
+
+TIMEOUT_SECONDS = float(os.getenv('LLM_TIMEOUT_SECONDS', '35'))
+RETRIES = int(os.getenv('LLM_RETRIES', '1'))  # after a network error or a 502/503/504, before the built-in agent takes the turn
+log = logging.getLogger('evs.agent')  # model calls and refused tool calls: status and timing, never the key or the messages
+
+
+async def _post(client: httpx.AsyncClient, headers: dict, payload: dict) -> httpx.Response:
+    for attempt in range(RETRIES + 1):
+        try:
+            resp = await client.post(OPENROUTER_URL, headers=headers, json=payload)
+        except httpx.TransportError:
+            if attempt == RETRIES:
+                raise
+        else:
+            if resp.status_code not in (502, 503, 504) or attempt == RETRIES:
+                return resp
+        log.warning('model call failed, retrying (%d/%d)', attempt + 1, RETRIES)
+        await asyncio.sleep(0.5 * (attempt + 1))
+    raise RuntimeError('unreachable')
 
 
 def _uid(prefix: str = 'e') -> str:
@@ -67,6 +95,7 @@ async def run_agent_turn(
     history: list[dict[str, Any]] | None = None,
 ) -> AsyncIterator[AgentEvent]:
     """Execute one turn of the agent loop with tool execution and numeric verification."""
+    record_llm_turn()
     api_key = get_openrouter_api_key()
     if not api_key:
         async for event in run_scripted_turn(store, simulation_id, user_text):
@@ -79,6 +108,7 @@ async def run_agent_turn(
     messages.append({'role': 'user', 'content': user_text})
 
     facts: dict[str, ToolFact] = {}
+    summaries: list[str] = []  # ready answers of this turn's tools, for when the model's own text cannot be verified
     citations: dict[str, dict[str, Any]] = {}  # passages retrieved this turn, by ref
     grounding: list[str] = []  # everything the tools returned this turn: dates and quotations are checked against it
     max_steps = 8
@@ -115,7 +145,7 @@ async def run_agent_turn(
     }
 
     try:
-        async with httpx.AsyncClient(timeout=35.0) as client:
+        async with httpx.AsyncClient(timeout=TIMEOUT_SECONDS) as client:
             for step_idx in range(max_steps):
                 payload = {
                     'model': DEFAULT_MODEL,
@@ -124,7 +154,9 @@ async def run_agent_turn(
                     'temperature': 0.0,
                     'max_tokens': MAX_TOKENS,
                 }
-                resp = await client.post(OPENROUTER_URL, headers=headers, json=payload)
+                started = time.perf_counter()
+                resp = await _post(client, headers, payload)
+                log.info('model call step=%d model=%s status=%d ms=%d', step_idx, DEFAULT_MODEL, resp.status_code, round((time.perf_counter() - started) * 1000))
                 if resp.status_code != 200:
                     reason = {402: 'the OpenRouter account has no credits for this request', 429: 'the request limit of the OpenRouter account is reached'}
                     async for event in unavailable(reason.get(resp.status_code, f'HTTP {resp.status_code}')):
@@ -143,10 +175,12 @@ async def run_agent_turn(
                         fn = call['function']
                         fn_name = fn['name']
                         call_id = call['id']
-                        try:
-                            args = json.loads(fn['arguments'] or '{}')
-                        except json.JSONDecodeError:
-                            args = {}
+                        # Only the declared tools, with arguments that fit their declared schema.
+                        args, refused = validate_tool_call(fn_name, fn.get('arguments'))
+                        if refused:
+                            log.warning('tool call refused: %s (%s)', fn_name, refused)
+                            messages.append({'role': 'tool', 'tool_call_id': call_id, 'content': json.dumps({'error': refused})})
+                            continue
 
                         yield AgentEvent(
                             id=_uid('step'),
@@ -157,109 +191,123 @@ async def run_agent_turn(
                         tool_data: dict[str, Any] = {}
                         tool_events: list[AgentEvent] = []
 
-                        if fn_name in ('run_engine', 'run_pricing'):
-                            tool_data, tool_facts, tool_events = tool_run_engine(
-                                store=store,
-                                simulation_id=simulation_id,
-                                product_ids=args.get('product_ids'),
-                                reference_id=args.get('reference_id'),
-                                overrides=args.get('overrides'),
-                            )
-                            for tf in tool_facts:
-                                facts[tf.key] = tf
-                        elif fn_name == 'read_inputs':
-                            tool_data, tool_facts, tool_events = tool_read_inputs(
-                                store=store,
-                                simulation_id=simulation_id,
-                            )
-                            for tf in tool_facts:
-                                facts[tf.key] = tf
-                        elif fn_name == 'check_inputs':
-                            tool_data, tool_facts, tool_events = tool_check_inputs(
-                                store=store,
-                                simulation_id=simulation_id,
-                            )
-                            for tf in tool_facts:
-                                facts[tf.key] = tf
-                        elif fn_name == 'compare_runs':
-                            tool_data, tool_facts, tool_events = tool_compare_runs(
-                                store=store,
-                                simulation_id=simulation_id,
-                                run_id_a=args.get('run_id_a'),
-                                run_id_b=args.get('run_id_b'),
-                            )
-                            for tf in tool_facts:
-                                facts[tf.key] = tf
-                        elif fn_name == 'snapshot_view':
-                            tool_data, tool_facts, tool_events = tool_snapshot_view(
-                                store=store,
-                                simulation_id=simulation_id,
-                                snapshot_id=args.get('snapshot_id', '2024'),
-                                product_ids=args.get('product_ids'),
-                            )
-                            for tf in tool_facts:
-                                facts[tf.key] = tf
-                        elif fn_name == 'draft_memo':
-                            tool_data, tool_facts, tool_events = tool_draft_memo(
-                                store=store,
-                                simulation_id=simulation_id,
-                                run_id=args.get('run_id'),
-                            )
-                            for tf in tool_facts:
-                                facts[tf.key] = tf
-                        elif fn_name == 'explain_flags':
-                            tool_data, tool_facts, tool_events = tool_explain_flags(
-                                store=store,
-                                simulation_id=simulation_id,
-                                flag_codes=args.get('flag_codes'),
-                            )
-                            for tf in tool_facts:
-                                facts[tf.key] = tf
-                        elif fn_name == 'explain_run':
-                            tool_data, tool_facts, tool_events = tool_explain_run(
-                                store=store,
-                                simulation_id=simulation_id,
-                                question=args.get('question'),
-                            )
-                            for tf in tool_facts:
-                                facts[tf.key] = tf
-                        elif fn_name == 'run_sulphur_sensitivity':
-                            tool_data, tool_facts, tool_events = tool_run_sulphur_sensitivity(
-                                store=store,
-                                product_id=args.get('product_id', 'phos-65-35'),
-                                reference_id=args.get('reference_id', 'TSP'),
-                                from_price=float(args.get('from_price', 100.0)),
-                                to_price=float(args.get('to_price', 1000.0)),
-                                step=float(args.get('step', 50.0)),
-                            )
-                            for tf in tool_facts:
-                                facts[tf.key] = tf
-                        elif fn_name == 'search_knowledge':
-                            # In a thread: the query is embedded over the network, which would hold up every other request.
-                            tool_data, tool_facts, tool_events = await asyncio.to_thread(
-                                tool_search_knowledge,
-                                store=store,
-                                query=args.get('query', ''),
-                                doc_type=args.get('doc_type'),
-                                limit=int(args.get('limit', 4)),
-                                first_ref=len(citations) + 1,
-                            )
-                            citations.update({r['ref']: r for r in tool_data['results']})
-                        elif fn_name == 'stage_change':
-                            change_obj, tool_events = tool_stage_change(
-                                store=store,
-                                simulation_id=simulation_id,
-                                patch=args.get('patch', {}),
-                                label=args.get('label', 'Proposed change'),
-                                reason=args.get('reason', ''),
-                            )
-                            tool_data = change_obj.model_dump()
-                        elif fn_name == 'ask_user':
-                            tool_data, tool_events = tool_ask_user(
-                                question=args.get('question', ''),
-                                options=args.get('options', []),
-                            )
+                        try:
+                            if fn_name in ('run_engine', 'run_pricing'):
+                                tool_data, tool_facts, tool_events = tool_run_engine(
+                                    store=store,
+                                    simulation_id=simulation_id,
+                                    product_ids=args.get('product_ids'),
+                                    reference_id=args.get('reference_id'),
+                                    overrides=args.get('overrides'),
+                                    create_version=False,  # the model does not write: the user confirms the save
+                                )
+                                for tf in tool_facts:
+                                    facts[tf.key] = tf
+                            elif fn_name == 'read_inputs':
+                                tool_data, tool_facts, tool_events = tool_read_inputs(
+                                    store=store,
+                                    simulation_id=simulation_id,
+                                )
+                                for tf in tool_facts:
+                                    facts[tf.key] = tf
+                            elif fn_name == 'check_inputs':
+                                tool_data, tool_facts, tool_events = tool_check_inputs(
+                                    store=store,
+                                    simulation_id=simulation_id,
+                                )
+                                for tf in tool_facts:
+                                    facts[tf.key] = tf
+                            elif fn_name == 'compare_runs':
+                                tool_data, tool_facts, tool_events = tool_compare_runs(
+                                    store=store,
+                                    simulation_id=simulation_id,
+                                    run_id_a=args.get('run_id_a'),
+                                    run_id_b=args.get('run_id_b'),
+                                )
+                                for tf in tool_facts:
+                                    facts[tf.key] = tf
+                            elif fn_name == 'snapshot_view':
+                                tool_data, tool_facts, tool_events = tool_snapshot_view(
+                                    store=store,
+                                    simulation_id=simulation_id,
+                                    snapshot_id=args.get('snapshot_id', '2024'),
+                                    product_ids=args.get('product_ids'),
+                                )
+                                for tf in tool_facts:
+                                    facts[tf.key] = tf
+                            elif fn_name == 'draft_memo':
+                                tool_data, tool_facts, tool_events = tool_draft_memo(
+                                    store=store,
+                                    simulation_id=simulation_id,
+                                    run_id=args.get('run_id'),
+                                )
+                                for tf in tool_facts:
+                                    facts[tf.key] = tf
+                            elif fn_name == 'explain_flags':
+                                tool_data, tool_facts, tool_events = tool_explain_flags(
+                                    store=store,
+                                    simulation_id=simulation_id,
+                                    flag_codes=args.get('flag_codes'),
+                                )
+                                for tf in tool_facts:
+                                    facts[tf.key] = tf
+                            elif fn_name == 'explain_run':
+                                tool_data, tool_facts, tool_events = tool_explain_run(
+                                    store=store,
+                                    simulation_id=simulation_id,
+                                    question=args.get('question'),
+                                )
+                                for tf in tool_facts:
+                                    facts[tf.key] = tf
+                            elif fn_name == 'run_sulphur_sensitivity':
+                                tool_data, tool_facts, tool_events = tool_run_sulphur_sensitivity(
+                                    store=store,
+                                    product_id=args.get('product_id', 'phos-65-35'),
+                                    reference_id=args.get('reference_id', 'TSP'),
+                                    from_price=float(args.get('from_price', 100.0)),
+                                    to_price=float(args.get('to_price', 1000.0)),
+                                    step=float(args.get('step', 50.0)),
+                                )
+                                for tf in tool_facts:
+                                    facts[tf.key] = tf
+                            elif fn_name == 'search_knowledge':
+                                # In a thread: the query is embedded over the network, which would hold up every other request.
+                                tool_data, tool_facts, tool_events = await asyncio.to_thread(
+                                    tool_search_knowledge,
+                                    store=store,
+                                    query=args.get('query', ''),
+                                    doc_type=args.get('doc_type'),
+                                    limit=int(args.get('limit', 4)),
+                                    first_ref=len(citations) + 1,
+                                )
+                                citations.update({r['ref']: r for r in tool_data['results']})
+                            elif fn_name == 'get_product':
+                                tool_data, tool_facts, tool_events = tool_get_product(store, args['product'])
+                                for tf in tool_facts:
+                                    facts[tf.key] = tf
+                            elif fn_name == 'list_products':
+                                tool_data, tool_facts, tool_events = tool_list_products(store)
+                            elif fn_name == 'stage_change':
+                                change_obj, tool_events = tool_stage_change(
+                                    store=store,
+                                    simulation_id=simulation_id,
+                                    patch=args.get('patch', {}),
+                                    label=args.get('label', 'Proposed change'),
+                                    reason=args.get('reason', ''),
+                                )
+                                tool_data = change_obj.model_dump()
+                            elif fn_name == 'ask_user':
+                                tool_data, tool_events = tool_ask_user(
+                                    question=args.get('question', ''),
+                                    options=args.get('options', []),
+                                )
+                        except (FieldError, HTTPException, ValueError, LookupError) as e:
+                            # A tool that refuses its input is an answer for the model to work with, not an outage.
+                            tool_data, tool_events = {'error': str(getattr(e, 'detail', e))}, []
+                            log.warning('tool %s refused its input: %s', fn_name, tool_data['error'])
 
+                        if isinstance(tool_data.get('summary'), str):
+                            summaries.append(tool_data['summary'])
                         for te in tool_events:
                             yield te
 
@@ -310,6 +358,9 @@ async def run_agent_turn(
                             safe_text, citation_events = cited(knowledge_answer(list(citations.values())), citations)
                             for ce in citation_events:
                                 yield ce
+                        elif 'anchor_price' not in facts and summaries:
+                            # Not a pricing turn: what the tools themselves say, which needs no checking.
+                            safe_text = '\n\n'.join(summaries)
                         else:
                             safe_text = render_fallback_template(facts)
                         yield AgentEvent(id=_uid('text'), type='text', payload={'content': safe_text})

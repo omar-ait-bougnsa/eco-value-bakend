@@ -186,7 +186,7 @@ def test_without_a_model_a_question_about_the_documents_is_answered_with_the_pas
     client.post('/api/reset')
     sim = client.post('/api/simulations', json={'title': 'Sources'}).json()
     r = client.post(f'/api/simulations/{sim["id"]}/messages', json={'text': 'What do the reports say about freight from Jorf Lasfar to Santos?', 'mode': 'script'})
-    events = [json.loads(line[5:]) for line in r.text.splitlines() if line.startswith('data:')]
+    events = [e for e in (json.loads(line[5:]) for line in r.text.splitlines() if line.startswith('data:')) if e['type'] != 'job']
     kinds = [e['type'] for e in events]
     assert kinds[:2] == ['step', 'tool'] and kinds[-2:] == ['text', 'done'] and set(kinds[2:-2]) == {'citation'}
     assert events[2]['payload']['label'] == f'{FREIGHTS}, 01-Oct-2026, Phosphates'
@@ -271,21 +271,20 @@ def test_a_question_the_script_does_not_know_runs_nothing_when_the_model_is_out(
     events, _ = _turn(knowledge, [_refused(429)], text='Hello, how are you today?')
     assert [e.type for e in events] == ['error', 'text', 'done']
     assert events[0].payload == {'message': 'The language model did not answer (the request limit of the OpenRouter account is reached). This reply is made without it.', 'recoverable': True}
-    assert 'nothing was run' in events[1].payload['content'] and events[2].payload == {'mode': 'script'}
+    assert events[1].payload['content'].startswith('I can price a product against a reference') and events[2].payload == {'mode': 'script'}
     assert all(sim.runs == [] for sim, _ in knowledge.sims() if sim.title == 'Knowledge')
 
     events, _ = _turn(knowledge, [_refused(402)], text='Price Phosfusion 65-35 against TSP')  # a pricing is still a pricing
     assert events[0].payload['message'].startswith('The language model did not answer (the OpenRouter account has no credits')
-    assert 'result' in [e.type for e in events]
+    assert 'question' in [e.type for e in events]  # it starts by asking which TSP cost to use, as the sources disagree
 
 
 def test_work_done_before_the_model_failed_is_not_done_again(knowledge):
     events, _ = _turn(knowledge, [_engine_call(), _refused(429)], text='Price Phosfusion 65-35 against TSP')
     kinds = [e.type for e in events]
-    assert kinds.count('result') == 1 and kinds[-3:] == ['error', 'text', 'done']
+    assert kinds.count('question') == 1 and 'result' not in kinds and kinds[-3:] == ['error', 'text', 'done']  # priced once, as a preview
     assert events[-2].payload['content'].startswith('Recommended anchor: 313.91 USD/t')  # from the run the engine did make
-    sim = next(sim for sim, _ in knowledge.sims() if sim.title == 'Knowledge')
-    assert [r.version for r in sim.runs] == [1]
+    assert all(not sim.runs for sim, _ in knowledge.sims() if sim.title == 'Knowledge')  # the model saved nothing
 
     events, _ = _turn(knowledge, [_search_call(QUESTION), ConnectionError('network down')])
     assert [e.type for e in events][-5:] == ['error', 'citation', 'citation', 'text', 'done']

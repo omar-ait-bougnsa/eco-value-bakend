@@ -12,3 +12,6 @@ venv/
 .env.*
 !.env.example
 .gitignore
+# browser tests (frontend: npm run test:e2e)
+test-results/
+playwright-report/

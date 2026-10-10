@@ -4,6 +4,8 @@ from pydantic import ValidationError
 
 from ..data import seed
 from ..schemas import Parameters, ParametersPatch, RunInput
+from ..engine.period import CURRENT_YEAR
+from ..limits import FieldError, parameters_errors
 from ..store import Store, StoreDep
 
 router = APIRouter(tags=['Parameters'])
@@ -21,6 +23,9 @@ def patch_parameters(body: ParametersPatch, store: Store = StoreDep):  # type: i
         params = Parameters.model_validate(merged)
     except ValidationError as e:
         raise RequestValidationError([{**err, 'loc': ('body', *err['loc'])} for err in e.errors(include_context=False)])
+    errors = parameters_errors(params.model_dump(), CURRENT_YEAR)
+    if errors:
+        raise FieldError(errors)
     return store.set_params(params)
 
 

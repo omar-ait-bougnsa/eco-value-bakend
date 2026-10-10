@@ -1,5 +1,6 @@
 import type { Flag, Method, RefId, Run, RunInput } from '@/engine/types'
 import type { Period } from '@/engine/period'
+import type { Job } from '@/lib/api'
 
 export type Tab = 'costing' | 'pricing' | 'margin' | 'overview'
 export type PinAxis = 'product' | 'strategy' | 'metric'
@@ -11,7 +12,7 @@ export type Msg = { id: string } & (
   | { kind: 'text'; text: string; sources?: string[]; feedback?: boolean }
   | { kind: 'steps'; steps: { label: string; done: boolean }[]; collapsed?: boolean }
   | { kind: 'flag'; flag: Flag }
-  | { kind: 'question'; text: string; flagId: string; options: QuestionOption[]; answered?: string; pending?: { input: RunInput } }
+  | { kind: 'question'; text: string; flagId: string; options: QuestionOption[]; answered?: string; /** What the agent gave with the question, to send back with the answer. */ resume?: Record<string, unknown>; summary?: string }
   | { kind: 'tool'; label: string }
   | { kind: 'result'; version: number }
   | { kind: 'change'; label: string; before: string; after: string; previews: { label: string; before: string; after: string }[]; patch: Partial<RunInput>; status: 'staged' | 'applied' | 'dismissed'; appliedVersion?: number; changeId?: string }
@@ -28,6 +29,8 @@ export interface Simulation {
   thread: Msg[]
   view: SimView
   busy?: boolean
+  /** Its latest agent job, as the server stored it: what says running, failed or done. */
+  job?: Job | null
 }
 
 export interface AppUI {
@@ -41,6 +44,8 @@ export interface AppUI {
   productSheetId: string | null
   uploadReviewOpen: boolean
   compareWith: number | null
+  /** The open form has changes that are not saved: another dialog does not replace it. */
+  dirty: boolean
 }
 
 type DOmit<T, K extends keyof never> = T extends unknown ? Omit<T, K> : never

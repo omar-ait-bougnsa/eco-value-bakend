@@ -92,14 +92,13 @@ def run_sulphur_sensitivity(
         ))
 
     # 3. Parity crossover break-even (CGM_new == CGM_ref)
-    ds = s_recipe_ref - s_recipe_new
+    # CGM = price − rate × (fixed + s × P_S), with rate = 1 + marketing where marketing is a cost of that product.
+    # Equal margins: P_S × (rate_ref × s_ref − rate_new × s_new) = (price_ref − rate_ref × fixed_ref) − (price_new − rate_new × fixed_new)
+    rate_new = 1.0 + marketing_pct if mode == 'corrected' else 1.0
+    rate_ref = 1.0 + marketing_pct if include_ref_marketing else 1.0
+    ds = rate_ref * s_recipe_ref - rate_new * s_recipe_new
     if anchor_price is not None and ref_price is not None and abs(ds) > 1e-6:
-        # Effective net revenues over fixed costs
-        eff_p_new = anchor_price / (1.0 + marketing_pct) if mode == 'corrected' else anchor_price
-        mkt_rate_ref = marketing_pct if include_ref_marketing else 0.0
-        eff_p_ref = ref_price / (1.0 + mkt_rate_ref)
-
-        p_s_crossover = ((eff_p_ref - base_fixed_ref) - (eff_p_new - base_fixed_new)) / ds
+        p_s_crossover = ((ref_price - rate_ref * base_fixed_ref) - (anchor_price - rate_new * base_fixed_new)) / ds
         break_evens.append(BreakEven(
             product_id=new_product.id,
             sulphur_price=round(p_s_crossover, 2),

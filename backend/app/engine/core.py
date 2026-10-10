@@ -135,7 +135,7 @@ def evaluate_product(
         anchor_price=anchor_price,
         ref_price=input.reference_price,
         ref_cost=ref_base_cost,
-        cost_for_margin=base_cost,
+        cost_for_margin=unit_cost if input.mode == 'corrected' else base_cost,  # the cost the CGM of this mode is taken over
         cgm=cgm,
     )
 

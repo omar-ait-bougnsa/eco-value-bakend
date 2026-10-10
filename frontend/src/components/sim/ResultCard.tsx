@@ -1,12 +1,13 @@
 import { ChevronRight, FileText } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { useApp } from '@/store/app'
-import { arrow, f2, millions, sign } from '@/lib/format'
+import { f2, millions, sign, vsRef } from '@/lib/format'
 import { cn } from '@/lib/utils'
 import { Pill, FlagIcon } from './atoms'
 import { PriceLadder } from './PriceLadder'
 import { leadResult } from '@/agent/memo'
 import { periodLabel } from '@/engine/period'
+import { METHOD_LABEL } from '@/engine/run'
 
 export function ResultCard({ simId, version, compact }: { simId: string; version: number; compact?: boolean }) {
   const sim = useApp((s) => s.sims[simId])
@@ -17,8 +18,8 @@ export function ResultCard({ simId, version, compact }: { simId: string; version
   const r = leadResult(run)
   const top = run.output.flags.filter((f) => f.severity === 'warning' || f.severity === 'error').slice(0, 2)
   const kpis: [string, string, string, string][] = [
-    ['Recommended', f2(r.anchorPrice), 'USD/t', 'Reference minus'],
-    ['CGM', f2(r.cgm), 'USD/t', `${arrow((r.cgm ?? 0) - (r.cgmRef ?? 0))} ${f2(Math.abs((r.cgm ?? 0) - (r.cgmRef ?? 0)))} vs ${run.input.referenceId} ${f2(r.cgmRef)}`],
+    ['Recommended', f2(r.anchorPrice), 'USD/t', METHOD_LABEL[run.input.anchor]],
+    ['CGM', f2(r.cgm), 'USD/t', vsRef(r.deltaVsRef, run.input.referenceId, r.cgmRef)],
     ['Total margin', millions(r.totalMargin), 'M USD/yr', `${Math.round(run.input.marketShare * 1000) / 10}% share`],
   ]
   return (

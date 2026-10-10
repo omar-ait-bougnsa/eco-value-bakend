@@ -9,7 +9,9 @@ from typing import Annotated, Literal, Optional
 from pydantic import BaseModel, ConfigDict, Field, create_model, model_validator
 
 # t ingredient / t product. The upper bound only keeps costs finite.
-Quantity = Annotated[float, Field(ge=0, le=1000)]
+Quantity = Annotated[float, Field(ge=0)]  # t ingredient / t product; its upper bound is a business limit (limits.py)
+YieldUnit = Literal['t/ha', '%']
+RecordStatus = Literal['active', 'quarantined']
 
 IngredientId = Literal['ammonia', 'kcl', 'rockDry', 'rockWet', 'sulphur', 'acp']
 Method = Literal['costPlus', 'market', 'value', 'refMinus']
@@ -43,6 +45,7 @@ class Composition(Base):
 
 
 class ProductIn(Base):
+    """A product as it is written. The types are checked here; the business bounds in `limits.product_errors`."""
     name: str = Field(min_length=1)
     family: Family = 'phosfusion'
     recipe: dict[IngredientId, Quantity] = Field(default_factory=dict, description='t ingredient / t product')
@@ -50,11 +53,42 @@ class ProductIn(Base):
     pcf: Optional[float] = Field(None, description='t CO2 / t product')
     pcfPlaceholder: Optional[bool] = None
     appRate: Optional[float] = Field(None, description='t product / ha')
-    yieldGain: Optional[float] = Field(None, description='t crop / ha vs reference')
+    yieldGain: Optional[float] = Field(None, description='Yield gain vs the reference, in `yieldGainUnit`')
+    yieldGainUnit: Optional[YieldUnit] = Field(None, description='Unit of `yieldGain`. Null on records made before the unit was stored: used as t/ha, with a flag until someone confirms it')
+    baselineYield: Optional[float] = Field(None, description='t crop / ha without the product. Needed when the yield gain is in %')
+
+    @model_validator(mode='before')
+    @classmethod
+    def _trim(cls, v):
+        if not isinstance(v, dict):
+            return v
+        if cls is ProductIn:  # a product read from the API can be sent back as it is: what the server sets is dropped
+            v = {k: x for k, x in v.items() if k not in ('id', 'status', 'issues')}
+        return {**v, 'name': v['name'].strip()} if isinstance(v.get('name'), str) else v
 
 
 class Product(ProductIn):
     id: str
+    status: RecordStatus = Field('active', description='A quarantined product failed the validation rules: it is kept, shown for review, and cannot be priced')
+    issues: list[str] = Field(default_factory=list, description='Why it is quarantined')
+
+    @model_validator(mode='before')
+    @classmethod
+    def _stored(cls, v):
+        # Rows written before these columns existed.
+        if not isinstance(v, dict):
+            v = {k: getattr(v, k, None) for k in cls.model_fields}
+        return {**v, 'status': v.get('status') or 'active', 'issues': v.get('issues') or []}
+
+
+class FieldProblem(Base):
+    field: str
+    message: str
+
+
+class Validation(Base):
+    """What the server would reject, without saving anything: the forms show it next to each field."""
+    errors: list[FieldProblem]
 
 
 class Ingredient(Base):
@@ -63,18 +97,25 @@ class Ingredient(Base):
 
 
 class CostLine(Base):
+    """`price` and `usd` are null when the period has no price for the ingredient."""
     id: IngredientId
     label: str
     qty: float
-    price: float
-    usd: float
+    price: Optional[float]
+    usd: Optional[float]
 
 
 class RecipeCost(Base):
+    """Recipe × input prices of a period: what the product list, the editor and the engine all show."""
     snapshotId: str
     snapshotLabel: str
+    periodFrom: date
+    periodTo: date
+    asOf: date = Field(description='Day the input prices are as of')
+    source: str = Field(description='Where the input prices come from')
     lines: list[CostLine]
-    rawMaterial: float
+    rawMaterial: Optional[float] = Field(description='USD / t product. Null when a price is missing: see `unavailable`')
+    unavailable: Optional[str] = Field(None, description='Why there is no total')
 
 
 class RecipeCostRequest(Base):
@@ -157,6 +198,18 @@ class UploadIn(Base):
 class UploadRecord(UploadIn):
     id: str
     uploadedAt: date
+    sizeBytes: Optional[int] = None
+    contentHash: Optional[str] = Field(None, description='SHA-256 of the file. Null on the demo records, which have no file')
+    status: RecordStatus = 'active'
+    issues: list[str] = Field(default_factory=list)
+    duplicate: bool = Field(False, description='On upload: this exact file was already there, and that record is returned')
+
+    @model_validator(mode='before')
+    @classmethod
+    def _stored(cls, v):
+        if not isinstance(v, dict):
+            v = {k: getattr(v, k, None) for k in cls.model_fields}
+        return {**v, 'status': v.get('status') or 'active', 'issues': v.get('issues') or [], 'duplicate': bool(v.get('duplicate'))}
 
 
 class UploadDetection(Base):
@@ -171,6 +224,8 @@ class UploadDetection(Base):
     affects: list[str]
     resolves: bool = Field(description='Adding this file clears the prices/freight freshness flag (D1)')
     warn: Optional[str] = None
+    problems: list[str] = Field(default_factory=list, description='Why the file would be refused. Empty when it can be used')
+    duplicateOf: Optional[str] = Field(None, description='Id of the upload that already holds this exact file')
 
 
 # ───────────────────────── engine ─────────────────────────
@@ -188,7 +243,9 @@ class RunInput(Base):
     valueShare: float = Field(ge=0, le=1)
     priceType: PriceType
     cropPrice: float = Field(ge=0)
-    yieldGain: float
+    yieldGain: float = Field(description='In `yieldGainUnit`')
+    yieldGainUnit: YieldUnit = Field('t/ha', description='t/ha, or % of `baselineYield`')
+    baselineYield: Optional[float] = Field(None, description='t crop / ha without the product: turns a gain in % into t/ha')
     appRateNew: float = Field(ge=0)
     appRateRef: float = Field(ge=0)
     pcfNew: float
@@ -220,6 +277,15 @@ class FlagAction(Base):
     target: Optional[str] = None
 
 
+class FlagOption(Base):
+    """One answer to a flag that asks a question (action kind `answer`)."""
+    id: str
+    label: str
+    sub: Optional[str] = None
+    refCostOverride: Optional[float] = Field(None, description='Reference cost to send as `refCostOverride` with this answer; null keeps the computed cost')
+    primary: bool = False
+
+
 class Flag(Base):
     id: str
     code: str
@@ -227,6 +293,7 @@ class Flag(Base):
     title: str
     detail: Optional[str] = None
     action: Optional[FlagAction] = None
+    options: Optional[list[FlagOption]] = None
 
 
 class MethodResult(Base):
@@ -270,6 +337,7 @@ class ProductResult(Base):
     refPrice: Optional[float]
     refCost: Optional[float]
     p2o5ValueRef: Optional[float]
+    yieldGainTHa: Optional[float] = Field(None, description='The yield gain the value pricing used, in t crop / ha')
     addedValue: float
     carbonSavingPerT: float
     carbonEffect: float
@@ -281,6 +349,11 @@ class ProductResult(Base):
     cgmRef: Optional[float]
     cgmP2O5: Optional[float]
     cgmS: Optional[float]
+    # Comparisons with the reference. Null on runs saved before these fields existed.
+    cgmRefP2O5: Optional[float] = None
+    deltaVsRef: Optional[float] = None
+    costVsRef: Optional[float] = None
+    sulphurShare: Optional[float] = Field(None, description='Share of the unit cost that is sulphur (0–1)')
     volume: float
     totalMargin: Optional[float]
     methods: list[MethodResult]
@@ -335,11 +408,33 @@ class RunCreate(Base):
     summary: Optional[str] = None
 
 
+JobState = Literal['queued', 'running', 'completed', 'failed', 'cancelled', 'timed_out']
+
+
+class Job(Base):
+    """A turn of the agent, with the state it is really in."""
+    id: str = Field(description='Also the correlation id: quote it to find the turn in the server logs')
+    simulationId: str
+    kind: Literal['message', 'run', 'answer']
+    state: JobState
+    mode: Optional[Literal['llm', 'script']] = None
+    request: dict = Field(description='What was asked (text, input, answer): send it again to retry')
+    result: Optional[dict] = Field(None, description='outcome: run | question | change | answer | unsupported; runVersion when a run was saved')
+    failureCode: Optional[str] = None
+    error: Optional[str] = Field(None, description='Why it failed, in words that are safe to show')
+    transitions: list[dict] = Field(description='[{state, at}], in order')
+    createdAt: datetime
+    startedAt: Optional[datetime] = None
+    finishedAt: Optional[datetime] = None
+    timeoutSeconds: float = Field(description='A job still running after this long is ended as timed_out')
+
+
 class Simulation(Base):
     id: str
     title: str
     createdAt: datetime
     runs: list[Run]
+    job: Optional[Job] = Field(None, description='Its latest agent job: what a reloaded page shows')
 
 
 class SimulationSummary(Base):
@@ -363,3 +458,4 @@ class Freshness(Base):
     warn: bool
     d1: Optional[Flag]
     d2: Optional[Flag]
+    behind: dict[str, int] = Field(default_factory=dict, description='Months behind the latest freight file, per Argus price upload that is too old (upload id → months)')

@@ -144,3 +144,42 @@ def test_tool_ask_user():
     )
     assert len(data['options']) == 2
     assert events[0].type == 'question'
+
+
+def test_snapshot_view_prices_the_run_over_that_year(store):
+    from app.schemas import RunInput
+    sim = store.add_sim('Snapshot')
+    tool_run_engine(store, sim.id, ['phos-65-35'], 'TSP')
+    data, _, _ = tool_snapshot_view(store, sim.id, '2024')
+    last = RunInput.model_validate(sim.runs[-1].input)
+    year = store.run(store.make_input({'periodFrom': '2024-01-01', 'periodTo': '2024-12-31'}, last)).perProduct['phos-65-35']
+    assert data['anchorPrice'] == year.anchorPrice != sim.runs[-1].output['perProduct']['phos-65-35']['anchorPrice']
+
+
+def test_the_agent_and_the_api_run_the_same_sulphur_sensitivity(store):
+    from app.routers.engine import sulphur_sweep
+    params = store.params()
+    store.set_params(params.model_copy(update={'fullCost': True}))  # D&A in the cost moves the break-evens
+    data, _, _ = tool_run_sulphur_sensitivity(store, 'phos-65-35', 'TSP')
+    assert [b['sulphur_price'] for b in data['breakEvens']] == [b.sulphur_price for b in sulphur_sweep(store, 'phos-65-35', 'TSP').break_evens]
+
+
+def test_stale_uploads_are_counted_to_the_real_date(store):
+    from datetime import timedelta
+    from app.engine.period import YTD
+    from app.engine.run import freshness_flags
+    uploads, params = store.uploads(), store.params()
+    newest = max(u.uploadedAt for u in uploads)
+    codes = lambda today: [f.code for f in freshness_flags(uploads, params, YTD, today=today)]
+    assert 'D2' not in codes(newest + timedelta(days=params.staleDays))
+    assert 'D2' in codes(newest + timedelta(days=params.staleDays + 1))
+
+
+def test_the_safe_template_only_says_what_the_numbers_say():
+    from app.agent.checker import render_fallback_template
+    from app.agent.types import ToolFact
+    fact = lambda k, v: ToolFact(key=k, value=v, unit='USD/t', label=k)
+    below = render_fallback_template({'anchor_price': fact('anchor_price', 313.91), 'floor': fact('floor', 373.08)})
+    above = render_fallback_template({'anchor_price': fact('anchor_price', 400.0), 'floor': fact('floor', 373.08)})
+    assert 'That is below the cost-plus floor of 373.08 USD/t.' in below
+    assert 'That sits above the cost-plus floor of 373.08 USD/t.' in above

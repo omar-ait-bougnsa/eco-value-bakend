@@ -210,12 +210,14 @@ The checker is a pure-code validator that intercepts the LLM's text output befor
 |---|---|---|
 | `step` | `{ id, label, status }` | `Steps` / `TextShimmer` progress indicator |
 | `flag` | `{ id, code, severity, title, action }` | `SystemMessage` with action chip |
-| `question` | `{ id, text, options: [{ id, label }] }` | Clickable answer chips (e.g. Netback vs FOB) |
+| `question` | `{ text, options: [{ id, label, sub, primary }], flag, resume, summary }` | Clickable answer chips. The built-in agent's questions carry `resume`: send it back with the answer (`answer: { option, question, resume, summary }`) |
 | `tool` | `{ id, name, label, latencyMs }` | Collapsible `Tool` execution card |
 | `result` | `{ id, run: RunSummary }` | Mini Price Ladder, KPI cards |
-| `change` | `{ id, patch, before, after, reason }` | `ChangeCard` with **Apply & Re-run** button |
+| `change` | `{ id, patch, before, after, reason, previews }` | `ChangeCard` with **Apply & Re-run** button; `previews` is what the change would move, priced without saving |
 | `citation` | `{ index, label, source, date, page, section, passage, relevanceScore, documentId, chunkId }` | Provenance chip under the `text` that follows: `[1] CRU Fertilizer Week, 24-Sep-2026, p.4` (see `RAG.md`) |
-| `text` | `{ id, content }` | Streamed markdown explanation with provenance chips |
+| `text` | `{ content, sources? }` | Streamed markdown explanation with provenance chips |
+| `view` | `{ period?, tab?, memo? }` | Points the screen at what the agent talks about: another analysis period, a tab, the memo |
+| `suggest` | `{ items }` | Chips of what to ask next |
 | `error` | `{ id, message, recoverable }` | Error alert with retry button |
 | `done` | `{ mode: "llm" | "script", usage }` | Stream completion indicator |
 
@@ -223,26 +225,21 @@ The checker is a pure-code validator that intercepts the LLM's text output befor
 
 ## 8. Revised Hero Demo Flow (Doc 09 & Doc 10 Aligned)
 
-The scripted fallback and LLM prompts implement the **revised 3-minute hero flow**:
+The built-in agent (`agent/fallback.py`, used when there is no model) runs this flow from the engine and the store: no number or product is written in its code.
 
-1. **User Prompt:** `"Price Phosfusion 65-35 against TSP"`
-2. **Steps Streamed:**
-   - *Reading CRU prices (TSP CFR Brazil, week of 24 Sep)...*
-   - *Reading CRU freight (Morocco → Brazil, 45–50k mt)...*
-   - *Evaluating raw material costs (Phosfusion 65-35: 310.90 USD/t, TSP: 655.18 USD/t)...*
-3. **Question Event (Netback vs FOB Confirmation):**
-   - Question: *"TSP CFR Brazil is 665 USD/t and freight is 23 USD/t. Calculate FOB-equivalent netback (642 USD/t) or use FOB Morocco Spot (699 USD/t)?"*
-   - Option Chips: `[Use Netback (642 USD/t) · (Recommended)]`, `[Use FOB Morocco (699 USD/t)]`.
-4. **User Selects Netback (642 USD/t):**
-   - Executes `run_engine` (alias: `run_pricing`).
-   - Emits `result` card: Anchor = **313.91 USD/t** (below floor 373.08), Phosfusion CGM = **3.02 USD/t**, TSP CGM = **-15.18 USD/t**.
-   - Emits flags: `P1` (anchor below floor), `W1` (yield gain unit open item).
+1. **User Prompt:** `"Price Phosfusion 65-35 against TSP"` (or the Configure run form, sent as `input`)
+2. **Check:** one `step`, *Checking sources and data freshness*, then the `D1` flag when prices and freight are too far apart.
+3. **Question Event:** when a flag of the input carries answers (`S1`: the TSP cost differs between the deck and the Standard cost), they are asked before anything is saved. The event carries `resume`.
+4. **Answer** (`answer: { option, resume, … }`):
+   - Saves v1, names the simulation after what it prices.
+   - Emits `tool`, the summary `text` with its sources, `result`, the flags still to confirm (`U1`, `C2`), then `suggest`.
 5. **What-If Turn:** `"What if value share is 50%?"`
-   - Agent stages change card: `valueShare: 33.3% → 50.0%` (Value price: 740.99 $\to$ 791.48 USD/t).
-   - User clicks **Apply** $\to$ creates $v2$ $\to$ side-by-side comparison.
+   - Stages a change card with its previews (value share, cost-plus margin, carbon price, market share, benchmark, full cost, anchor).
+   - User clicks **Apply** → `POST /changes/{id}/apply` → v2.
 6. **Sensitivity Turn:** `"Show sulphur break-even vs TSP"`
-   - Calls `run_sulphur_sensitivity`.
-   - Explains zero-margin break-evens: Phosfusion = **918.86 USD/t**, TSP = **870.41 USD/t**; Crossover = **848.46 USD/t**.
+   - Runs the sensitivity for the simulation's own product and reference.
+   - Explains the zero-margin break-evens and the crossover it computed (for 65-35 vs TSP: 918.86, 870.41 and 848.46 USD/t).
+7. **Also:** another analysis period (`view` event + derived numbers), why the anchor is below the floor, value pricing explained, the memo, the data check, the latest uploads, the indexed documents.
 
 ---
 

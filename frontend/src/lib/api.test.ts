@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
-import { api, type AgentEvent } from './api'
+import { ApiError, api, type AgentEvent } from './api'
 
 // A what-if turn as the backend sends it (POST /api/simulations/{id}/messages).
 const FRAMES = [
@@ -42,3 +42,14 @@ describe('api.agentTurn', () => {
     await expect(api.agentTurn('nope', 'x', () => {})).rejects.toThrow("Simulation 'nope' not found")
   })
 })
+
+describe('a refused request', () => {
+  it('carries the server’s errors field by field', async () => {
+    vi.stubGlobal('fetch', async () => new Response(JSON.stringify({ detail: 'recipe.sulphur: must be between 0 and 3 t/t', errors: [{ field: 'recipe.sulphur', message: 'must be between 0 and 3 t/t' }] }), { status: 400 }))
+    const error = await api.products().then(() => null, (e) => e)
+    expect(error).toBeInstanceOf(ApiError)
+    expect(error.message).toBe('recipe.sulphur: must be between 0 and 3 t/t')
+    expect(error.fields).toEqual([{ field: 'recipe.sulphur', message: 'must be between 0 and 3 t/t' }])
+  })
+})
+

@@ -26,16 +26,15 @@ services:
 
   api:
     build: .
+    # The settings (model key, model, limits) are in the repository's .env, next to this folder: Compose only reads
+    # backend/.env by itself, so without this line the key never reached the container.
+    env_file:
+      - path: ../.env
+        required: false
     environment:
       DATABASE_URL: postgresql+psycopg://eco:eco@db:5432/eco
-      openrouter_api_key: ${openrouter_api_key:-}
-      OPENROUTER_API_KEY: ${OPENROUTER_API_KEY:-}
-      OPENROUTER_MODEL: ${OPENROUTER_MODEL:-anthropic/claude-sonnet-5.5}
-      OPENROUTER_MAX_TOKENS: ${OPENROUTER_MAX_TOKENS:-3000}
-      LLM_ENABLED: ${LLM_ENABLED:-true}
-      OPENAI_API_KEY: ${OPENAI_API_KEY:-}
-      EMBEDDINGS: ${EMBEDDINGS:-auto}
-      EMBEDDING_MODEL: ${EMBEDDING_MODEL:-text-embedding-3-small}
+      # The model key and model, LLM_ENABLED, the embeddings and EVS_LIMITS come from ../.env (env_file above).
+      # They are not repeated here: a value set here, even empty, would replace the one in the file.
     ports:
       - "127.0.0.1:${API_PORT:-8000}:8000" # this machine only: the API has no authentication yet
     depends_on:

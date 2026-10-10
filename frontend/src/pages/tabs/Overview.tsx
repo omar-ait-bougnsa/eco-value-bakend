@@ -6,9 +6,10 @@ import { PivotBar } from '@/components/sim/PivotBar'
 import { PivotTable } from '@/components/sim/PivotTable'
 import { openFlagTarget, openHypotheses } from '@/components/sim/flag-actions'
 import type { SimData } from '@/components/sim/sim-context'
-import { diffInputs } from '@/engine/run'
 import { METHOD_LABEL } from '@/engine/run'
-import { arrow, f2, millions, pct, sign } from '@/lib/format'
+import { api } from '@/lib/api'
+import { useQuery } from '@/lib/query'
+import { arrow, f2, millions, pct, sign, vsRef } from '@/lib/format'
 import { useApp } from '@/store/app'
 import { cn } from '@/lib/utils'
 
@@ -17,13 +18,14 @@ const fmtVal = (k: string, v: unknown) => (v == null ? '—' : ['valueShare', 'c
 
 export function ComparePanel({ data }: { data: SimData }) {
   const cmp = data.compare!; const { run } = data
-  const diffs = diffInputs(cmp.input, run.input)
+  const changed = useQuery(`diff:${cmp.id}:${run.id}`, () => api.diffInputs(cmp.input, run.input))
+  const diffs = changed.data ?? []
   const a = cmp.output.perProduct[run.input.productIds[0]]; const b = run.output.perProduct[run.input.productIds[0]]
   const rows = (['costPlus', 'refMinus', 'value', 'market'] as const).map((m) => ({ m, a: a.prices[m], b: b.prices[m] }))
   return (
     <div className="grid gap-4 @3xl:grid-cols-2" data-testid="compare-panel">
       <Card title="Changed inputs" sub={`v${cmp.version} → v${run.version}`}>
-        {diffs.length === 0 ? <p className="text-sm text-muted-foreground">No input changed.</p> : (
+        {diffs.length === 0 ? <p className="text-sm text-muted-foreground">{changed.loading ? 'Comparing…' : changed.error ?? 'No input changed.'}</p> : (
           <div className="space-y-2">{diffs.map((d) => (
             <div key={String(d.key)} className="flex items-center gap-2 rounded-lg border p-3 text-sm">
               <span>{KEYLABEL[String(d.key)] ?? String(d.key)}</span><span className="flex-1" />
@@ -47,7 +49,6 @@ export default function Overview({ data }: { data: SimData }) {
   const { result: r, input, out, sim, compare } = data
   const cmpR = compare?.output.perProduct[r.productId]
   const dlt = (now: number | null, was: number | null | undefined) => (cmpR && now != null && was != null && Math.abs(now - was) > 0.004 ? `${arrow(now - was)} ${sign(now - was)} vs v${compare!.version}` : cmpR ? `no change vs v${compare!.version}` : null)
-  const refP2 = data.ctx.products.find((p) => p.id === input.referenceId)?.composition.P2O5 ?? 1
   const open = out.flags.filter((f) => f.severity !== 'resolved')
   const gotoHyp = (k: string) => openHypotheses(k)
   return (
@@ -55,8 +56,8 @@ export default function Overview({ data }: { data: SimData }) {
       <PivotBar data={data} />
       <div className="grid grid-cols-2 gap-4 @2xl:grid-cols-4">
         <Kpi label="Recommended price" value={f2(r.anchorPrice)} unit="USD/t" delta={dlt(r.anchorPrice, cmpR?.anchorPrice) ?? METHOD_LABEL[input.anchor]} />
-        <Kpi label="CGM per t" value={f2(r.cgm)} unit="USD/t" delta={dlt(r.cgm, cmpR?.cgm) ?? `${arrow((r.cgm ?? 0) - (r.cgmRef ?? 0))} ${f2(Math.abs((r.cgm ?? 0) - (r.cgmRef ?? 0)))} vs ${input.referenceId} ${f2(r.cgmRef)}`} />
-        <Kpi label="CGM per t P2O5" value={f2(r.cgmP2O5)} unit="USD/t" delta={`${input.referenceId} ${r.cgmRef != null ? f2(r.cgmRef / refP2) : '—'}`} />
+        <Kpi label="CGM per t" value={f2(r.cgm)} unit="USD/t" delta={dlt(r.cgm, cmpR?.cgm) ?? vsRef(r.deltaVsRef, input.referenceId, r.cgmRef)} />
+        <Kpi label="CGM per t P2O5" value={f2(r.cgmP2O5)} unit="USD/t" delta={`${input.referenceId} ${f2(r.cgmRefP2O5)}`} />
         <Kpi label="Total margin" value={millions(r.totalMargin)} unit="M USD/yr" delta={`${Math.round(input.marketShare * 1000) / 10}% share · ${f2(r.volume / 1000).replace('.00', '')} kt`} />
       </div>
       <Card title="Price ladder" sub="Floor = cost-plus · anchor = reference minus · ceiling = value pricing">

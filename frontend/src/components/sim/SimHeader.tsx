@@ -6,8 +6,8 @@ import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigge
 import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/popover'
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
 import { exportMarkdown, exportPdf, exportXlsx } from '@/lib/export'
-import { timeShort } from '@/lib/format'
-import { useApp } from '@/store/app'
+import { dayShort, timeShort } from '@/lib/format'
+import { useApp, useReferences } from '@/store/app'
 import type { PinAxis, Tab } from '@/store/types'
 import { METHOD_LABEL } from '@/engine/run'
 import { cn } from '@/lib/utils'
@@ -23,6 +23,7 @@ export function SimHeader({ data, onToggleAsk, askOpen }: { data: SimData; onTog
   const v = sim.view
   const setView = useApp((s) => s.setView); const setUI = useApp((s) => s.setUI); const ui = useApp((s) => s.ui)
   const compareWith = ui.compareWith
+  const refs = useReferences()
   const title = sim.title.replace(/ · .*/, '')
   const products = input.productIds.map((id) => ctx.products.find((p) => p.id === id)!)
   return (
@@ -47,7 +48,7 @@ export function SimHeader({ data, onToggleAsk, askOpen }: { data: SimData; onTog
       </div>
       {derived && (
         <div className="flex items-center gap-2.5 border-b bg-muted px-4 py-2.5 text-sm sm:px-8" data-testid="derived-banner">
-          <Clock className="size-3.5" /><span className="font-medium">Viewing under {derivedLabel}</span><span className="hidden text-muted-foreground sm:inline">Derived view — not a new run</span><span className="flex-1" />
+          <Clock className="size-3.5" /><span className="font-medium">Viewing under {derivedLabel}</span><span className="hidden text-muted-foreground sm:inline">{data.error ? `Could not calculate this view: ${data.error}` : data.loading ? 'Calculating…' : 'Derived view — not a new run'}</span><span className="flex-1" />
           <button className={bannerAction} onClick={() => setView(sim.id, { period: { from: run.input.periodFrom, to: run.input.periodTo }, ref: run.input.referenceId })}>Back to the run’s period</button>
         </div>
       )}
@@ -67,7 +68,7 @@ export function SimHeader({ data, onToggleAsk, askOpen }: { data: SimData; onTog
             {[...sim.runs].reverse().map((r) => (
               <button key={r.id} onClick={() => setView(sim.id, { version: r.version })} className={cn('flex w-full items-start gap-2.5 rounded-lg p-2.5 text-left hover:bg-accent', r.version === run.version && 'bg-accent')}>
                 <Pill tone={r.version === run.version ? 'solid' : 'default'} className="font-mono">v{r.version}</Pill>
-                <span className="min-w-0 flex-1"><span className="block truncate text-sm font-medium">{r.summary}</span><span className="block text-[13px] text-muted-foreground">{r.createdBy === 'agent' ? 'Agent' : 'You'} · today {timeShort(r.createdAt)}</span></span>
+                <span className="min-w-0 flex-1"><span className="block truncate text-sm font-medium">{r.summary}</span><span className="block text-[13px] text-muted-foreground">{r.createdBy === 'agent' ? 'Agent' : 'You'} · {dayShort(r.createdAt)} {timeShort(r.createdAt)}</span></span>
                 {r.version === run.version && <Check className="size-3.5" />}
               </button>
             ))}
@@ -78,7 +79,7 @@ export function SimHeader({ data, onToggleAsk, askOpen }: { data: SimData; onTog
         <span className="flex-1" />
         <div className="flex flex-wrap items-center gap-2">
           <div className="inline-flex h-[30px] items-center rounded-md border pl-2.5"><span className="text-[13px] text-muted-foreground">Compare to</span>
-            <Select value={v.ref} onValueChange={(c) => setView(sim.id, { ref: c as 'TSP' | 'DAP' | 'MAP' })}><SelectTrigger className={chipTrigger} aria-label="Compare to"><SelectValue /></SelectTrigger><SelectContent>{['TSP', 'DAP', 'MAP'].map((s) => <SelectItem key={s} value={s}>{s}</SelectItem>)}</SelectContent></Select></div>
+            <Select value={v.ref} onValueChange={(c) => setView(sim.id, { ref: c as typeof v.ref })}><SelectTrigger className={chipTrigger} aria-label="Compare to"><SelectValue /></SelectTrigger><SelectContent>{refs.map((s) => <SelectItem key={s} value={s}>{s}</SelectItem>)}</SelectContent></Select></div>
           {(() => { const n = data.out.flags.filter((f) => f.severity !== 'resolved').length; return n ? <Pill tone="warning"><span className="size-1.5 rounded-full bg-warning-dot" />{n} flags</Pill> : null })()}
         </div>
       </div>

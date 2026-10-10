@@ -3,7 +3,7 @@ import { METHOD_LABEL } from '@/engine/run'
 import type { ProductResult, Run } from '@/engine/types'
 import { f2, millions, pct } from '@/lib/format'
 import { dayShort } from '@/lib/format'
-import { isCurrentPeriod, periodLabel } from '@/engine/period'
+import { currentYear, isCurrentPeriod, periodLabel } from '@/engine/period'
 
 export interface Memo { title: string; sections: { title: string; paragraphs?: string[]; items?: { text: string; tone?: 'warning' | 'info' }[] }[]; sources: string[] }
 
@@ -13,7 +13,7 @@ export function sourcesFor(run: Run, ctx: Ctx): string[] {
   const per = { from: run.input.periodFrom, to: run.input.periodTo }
   if (isCurrentPeriod(per)) {
     if (argus) out.push(`Prices · ${dayShort(argus.fileDate)}`)
-    out.push('Standard cost · 2026')
+    out.push(`Standard cost · ${currentYear()}`)
   } else {
     out.push(`CRU averages · ${periodLabel(per)}`)
   }
@@ -43,7 +43,8 @@ export function buildMemo(run: Run, ctx: Ctx, productId?: string): Memo {
   sections.push({ title: 'Recommendation', paragraphs: [`Analysis period: ${periodLabel({ from: i.periodFrom, to: i.periodTo })}.`, `Anchor ${r.name} at ${f2(r.anchorPrice)} USD/t (${METHOD_LABEL[i.anchor].toLowerCase()}). Corridor: ${f2(r.floor)} (cost-plus floor) to ${f2(r.ceiling)} USD/t (value ceiling).`] })
   const why: string[] = []
   if (r.p2o5ValueRef != null) why.push(`${r.name} holds ${pct(p2o5, 2)} P2O5. Valuing P2O5 at ${i.referenceId}’s price (${f2(r.p2o5ValueRef)} USD per t P2O5) gives ${f2(r.prices.refMinus)} USD/t.`)
-  why.push(`Its unit cost is ${f2(r.unitCost)} USD/t, against ${f2(r.refCost)} USD/t for ${i.referenceId}${isCurrentPeriod({ from: i.periodFrom, to: i.periodTo }) ? ' — sulphur at 900 USD/t drives the reference cost' : ''}.`)
+  const sulphur = r.lines.find((l) => l.id === 'sulphur')?.price
+  why.push(`Its unit cost is ${f2(r.unitCost)} USD/t, against ${f2(r.refCost)} USD/t for ${i.referenceId}${sulphur != null ? ` — sulphur at ${f2(sulphur)} USD/t drives the reference cost` : ''}.`)
   sections.push({ title: 'Why', paragraphs: why })
   sections.push({ title: `Margin vs ${i.referenceId}`, paragraphs: [`CGM is ${f2(r.cgm)} USD/t at the anchor, against ${f2(r.cgmRef)} USD/t for ${i.referenceId}. At the ${pct(i.marketShare, 0)} market share assumed, that is about ${millions(r.totalMargin)} M USD per year.`] })
   const open = run.output.flags.filter((f) => f.severity === 'warning' || f.severity === 'error')

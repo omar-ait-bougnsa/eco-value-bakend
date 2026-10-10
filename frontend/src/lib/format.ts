@@ -6,6 +6,8 @@ export const pct = (n: number, d = 1) => `${(n * 100).toLocaleString('en-US', { 
 export const millions = (n: number | null | undefined) => (n == null ? '—' : (n / 1e6).toLocaleString('en-US', { minimumFractionDigits: 1, maximumFractionDigits: 1 }).replace('-', '−'))
 export const sign = (n: number, d = 2) => `${n >= 0 ? '+' : '−'}${Math.abs(n).toLocaleString('en-US', { minimumFractionDigits: d, maximumFractionDigits: d })}`
 export const arrow = (n: number) => (n >= 0 ? '▲' : '▼')
+/** `▲ 12.00 vs TSP 34.00`: a margin's gap to the reference, as the backend gives it. */
+export const vsRef = (delta: number | null | undefined, ref: string, refValue: number | null | undefined) => (delta == null ? `${ref} ${f2(refValue)}` : `${arrow(delta)} ${f2(Math.abs(delta))} vs ${ref} ${f2(refValue)}`)
 const MON = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec']
 const parts = (iso: string) => { const [y, m, d] = iso.slice(0, 10).split('-').map(Number); return { y, m: MON[m - 1], d: String(d).padStart(2, '0') } }
 export const dayLong = (iso: string) => { const p = parts(iso); return `${p.d} ${p.m} ${p.y}` }

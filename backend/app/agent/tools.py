@@ -14,18 +14,13 @@ Catalog of tools:
 - explain_run: Plain-language explanation of pricing methods and CGM margins.
 - search_knowledge: Passages of the indexed documents (reports, trials, methodology) with their source.
 """
+import json
+import math
 import time
 from typing import Any, Optional
 from uuid import uuid4
 
-from ..engine import (
-    Composition,
-    EngineInput,
-    EngineParams,
-    ProductDef,
-    evaluate,
-    run_sulphur_sensitivity as calc_sensitivity,
-)
+from ..engine.period import YTD, year_period
 from ..engine.run import diff_inputs
 from ..rag import EmbeddingError, search
 from ..schemas import RunInput, RunOutput
@@ -183,9 +178,13 @@ def tool_run_engine(
         payload={'label': f'Pricing {lead_name} against {run_input.referenceId}...', 'status': 'running'},
     ))
 
+    started = time.perf_counter()
     if create_version:
         summary = body_overrides.get('summary') or ('Re-run' if prev else 'Initial run')
         run = store.add_run(sim, run_input, by='agent', summary=summary)
+        if not prev:  # a first run names the simulation after what it prices
+            from .fallback import title_for
+            store.rename_sim(sim, title_for(store, run_input))
         run_output = run.output
         run_id = run.id
         version = run.version
@@ -197,7 +196,7 @@ def tool_run_engine(
     events.append(AgentEvent(
         id=_uid('tool'),
         type='tool',
-        payload={'name': 'run_engine', 'label': f'Pricing engine · 4 methods (v{version})', 'latencyMs': 45},
+        payload={'name': 'run_engine', 'label': f'Pricing engine · {len(run_input.methods)} methods (v{version})', 'latencyMs': round((time.perf_counter() - started) * 1000)},
     ))
 
     # Build ToolFacts from the lead product
@@ -228,19 +227,18 @@ def tool_run_engine(
     if lead_res.cgmS:
         facts.append(ToolFact(key='cgm_s', value=round(lead_res.cgmS, 2), unit='USD/t', label=f'{lead_res.name} CGM per ton Sulphur'))
 
-    events.append(AgentEvent(
-        id=_uid('result'),
-        type='result',
-        payload={
-            'runId': run_id,
-            'version': version,
-            'anchorPrice': lead_res.anchorPrice,
-            'floor': lead_res.floor,
-            'cgm': lead_res.cgm,
-            'cgmRef': lead_res.cgmRef,
-            'flags': [f.model_dump() for f in run_output.flags],
-        },
-    ))
+    if not create_version:
+        # Nothing was written. The user decides: the answer comes back with `resume` and the built-in agent saves the run.
+        events.append(AgentEvent(id=_uid('question'), type='question', payload={
+            'text': f'Save this pricing of {lead_res.name} against {run_input.referenceId} as v{version} of the simulation?',
+            'options': [{'id': 'save', 'label': f'Save as v{version}', 'sub': None, 'primary': True}, {'id': 'discard', 'label': 'Do not save', 'sub': None, 'primary': False}],
+            'flag': 'save', 'resume': run_input.model_dump(mode='json'), 'summary': 'Re-run' if prev else 'Initial run',
+        }))
+    else:
+        events.append(AgentEvent(id=_uid('result'), type='result', payload={
+            'runId': run_id, 'version': version, 'anchorPrice': lead_res.anchorPrice, 'floor': lead_res.floor,
+            'cgm': lead_res.cgm, 'cgmRef': lead_res.cgmRef, 'flags': [f.model_dump() for f in run_output.flags],
+        }))
 
     data = {
         'version': version,
@@ -250,6 +248,7 @@ def tool_run_engine(
         'cgm': lead_res.cgm,
         'cgmRef': lead_res.cgmRef,
         'flags': [f.code for f in run_output.flags],
+        'saved': create_version,
     }
     return data, facts, events
 
@@ -330,13 +329,10 @@ def tool_snapshot_view(
     if not target_snap:
         raise ValueError(f'Snapshot {snapshot_id} not found')
 
-    # Create temporary input with period bounds or snapshot
-    run_input = store.make_input(overrides, prev)
-    ctx = store.ctx()
-    # Replace snapshot in ctx temporarily
-    ctx_override = store.ctx()
-    ctx_override.snapshots = [target_snap] + [s for s in snaps if s.id != target_snap.id]
-    output = store.run(run_input, ctx_override)
+    # The run's inputs over that snapshot's own period: the current year to date, or a past calendar year.
+    span = YTD if target_snap.id == 'today' else year_period(int(target_snap.id))
+    run_input = store.make_input({**overrides, 'periodFrom': span.start, 'periodTo': span.end}, prev)
+    output = store.run(run_input)
 
     lead_id = run_input.productIds[0]
     lead_res = output.perProduct[lead_id]
@@ -430,6 +426,17 @@ def tool_stage_change(
     before_map = {d.key: d.before for d in diffs}
     after_map = {d.key: d.after for d in diffs}
 
+    # What the change would move, priced without saving anything.
+    lead = base_input.productIds[0]
+    a, b = _get_output(last_run).perProduct.get(lead), store.run(candidate_input).perProduct.get(lead)
+    previews: list[dict[str, str]] = []
+    if a and b:
+        pairs = [('Value pricing', a.prices.get('value'), b.prices.get('value')), ('Cost-plus', a.prices.get('costPlus'), b.prices.get('costPlus')),
+                 ('Recommended anchor', a.anchorPrice, b.anchorPrice), ('CGM per t', a.cgm, b.cgm)]
+        previews = [{'label': l, 'before': f'{x:,.2f}', 'after': f'{y:,.2f}'} for l, x, y in pairs if x is not None and y is not None and abs(x - y) > 0.004]
+        if a.totalMargin is not None and b.totalMargin is not None and abs(a.totalMargin - b.totalMargin) > 1e3:
+            previews.append({'label': 'Total margin (M USD/yr)', 'before': f'{a.totalMargin / 1e6:,.1f}', 'after': f'{b.totalMargin / 1e6:,.1f}'})
+
     change = StagedChange(
         id=_uid('c'),
         simulationId=simulation_id,
@@ -439,6 +446,7 @@ def tool_stage_change(
         patch=patch,
         before=before_map,
         after=after_map,
+        previews=previews[:3],
         status='staged',
     )
 
@@ -483,54 +491,8 @@ def tool_run_sulphur_sensitivity(
         payload={'label': f'Calculating sulphur sensitivity ({from_price:.0f} → {to_price:.0f} USD/t)...', 'status': 'running'},
     ))
 
-    p_row = store.product(product_id)
-    ref_row = store.product(reference_id)
-    snap = store.snapshots()[0]
-    params = store.params()
-
-    p_def = ProductDef(
-        id=p_row.id,
-        name=p_row.name,
-        recipe=p_row.recipe,
-        composition=Composition(**p_row.composition.model_dump()),
-        pcf=p_row.pcf,
-    )
-    ref_def = ProductDef(
-        id=ref_row.id,
-        name=ref_row.name,
-        recipe=ref_row.recipe,
-        composition=Composition(**ref_row.composition.model_dump()),
-        pcf=ref_row.pcf,
-    )
-    cost_prices = dict(snap.inputs)
-    ref_quote = snap.refPrices.get(ref_row.id)
-    ref_price = ref_quote.low if ref_quote else 640.0
-
-    res = evaluate(EngineInput(
-        products={p_def.id: p_def, ref_def.id: ref_def},
-        product_ids=[p_def.id],
-        reference_id=ref_def.id,
-        cost_prices=cost_prices,
-        reference_price=ref_price,
-        params=EngineParams(
-            cost_plus_margin=params.costPlusMargin,
-            marketing_pct=params.marketingPct,
-            anchor_method='refMinus',
-        ),
-    ))
-    anchor_price = res.per_product[p_def.id].anchor_price
-
-    sens_res = calc_sensitivity(
-        new_product=p_def,
-        ref_product=ref_def,
-        cost_prices=cost_prices,
-        anchor_price=anchor_price,
-        ref_price=ref_price,
-        marketing_pct=params.marketingPct,
-        from_price=from_price,
-        to_price=to_price,
-        step=step,
-    )
+    from ..routers.engine import sulphur_sweep  # the sweep the API serves, so the chat and the screens agree
+    sens_res = sulphur_sweep(store, product_id, reference_id, from_price, to_price, step)
 
     facts: list[ToolFact] = []
     for be in sens_res.break_evens:
@@ -678,7 +640,77 @@ def tool_search_knowledge(
 # 2. Tool Definitions for LLM Function Calling (OpenAI / OpenRouter JSON Schema)
 # ─────────────────────────────────────────────────────────────────────────────
 
+def tool_get_product(store: Store, product: str) -> tuple[dict[str, Any], list[ToolFact], list[AgentEvent]]:
+    """A product of the library by id or name: its record, its raw-material cost at this year's prices, and a ready summary."""
+    from .fallback import product_card
+    from ..routers.products import _recipe_cost
+    wanted = product.strip().lower()
+    found = next((p for p in store.products() if wanted in (p.id.lower(), p.name.lower())), None) or next((p for p in store.products() if wanted and wanted in p.name.lower()), None)
+    if found is None:
+        raise LookupError(f'No product named {product!r}. Known ids: {", ".join(p.id for p in store.products())}')
+    cost = _recipe_cost(store, found.recipe, None, None)
+    data = {'product': found.model_dump(), 'cost': cost.model_dump(mode='json'), 'summary': product_card(store, found.id)}
+    facts = [ToolFact(key=f'raw_material_{found.id}', value=round(cost.rawMaterial, 2), unit='USD/t', label=f'{found.name} raw-material cost')] if cost.rawMaterial is not None else []
+    return data, facts, [AgentEvent(id=_uid('tool'), type='tool', payload={'name': 'get_product', 'label': f'Product library · {found.name}', 'latencyMs': 0})]
+
+
+def tool_list_products(store: Store) -> tuple[dict[str, Any], list[ToolFact], list[AgentEvent]]:
+    products = [{'id': p.id, 'name': p.name, 'family': p.family, 'status': p.status} for p in store.products()]
+    return {'products': products}, [], [AgentEvent(id=_uid('tool'), type='tool', payload={'name': 'list_products', 'label': f'Product library · {len(products)} products', 'latencyMs': 0})]
+
+
+_JSON_TYPES = {'string': str, 'number': (int, float), 'integer': int, 'boolean': bool, 'array': list, 'object': dict}
+
+
+def validate_tool_call(name: str, raw_arguments: Any) -> tuple[dict[str, Any], Optional[str]]:
+    """The arguments of a model's tool call, checked against the schema the tool declares: (arguments, None), or ({}, why it is refused).
+    A tool that is not declared is refused: the declarations are the allow-list."""
+    name = {'run_pricing': 'run_engine'}.get(name, name)  # an older name of the same tool
+    spec = next((t['function'] for t in TOOL_DEFINITIONS if t['function']['name'] == name), None)
+    if spec is None:
+        return {}, f'{name!r} is not a tool of this agent'
+    try:
+        args = json.loads(raw_arguments or '{}')
+    except (TypeError, ValueError):
+        return {}, 'the arguments are not valid JSON'
+    if not isinstance(args, dict):
+        return {}, 'the arguments must be a JSON object'
+    schema = spec.get('parameters', {})
+    props = schema.get('properties', {})
+    unknown = [k for k in args if k not in props]
+    if unknown:
+        return {}, f'unknown argument(s): {", ".join(unknown)}'
+    missing = [k for k in schema.get('required', []) if k not in args]
+    if missing:
+        return {}, f'missing argument(s): {", ".join(missing)}'
+    for k, v in args.items():
+        want = _JSON_TYPES.get(props[k].get('type'))
+        if want and (not isinstance(v, want) or (isinstance(v, bool) and props[k].get('type') in ('number', 'integer'))):
+            return {}, f'{k} must be a {props[k]["type"]}'
+        if 'enum' in props[k] and v not in props[k]['enum']:
+            return {}, f'{k} must be one of {", ".join(map(str, props[k]["enum"]))}'
+        if isinstance(v, float) and not math.isfinite(v):
+            return {}, f'{k} must be a finite number'
+    return args, None
+
+
 TOOL_DEFINITIONS = [
+    {
+        'type': 'function',
+        'function': {
+            'name': 'get_product',
+            'description': 'Look up one product of the library by id or name (e.g. "TSP", "Phosfusion 65-35"): recipe, composition, carbon footprint, agronomy and raw-material cost at this year\'s prices. Use it for any question about a product. Its `summary` can be quoted as it is.',
+            'parameters': {'type': 'object', 'properties': {'product': {'type': 'string', 'description': 'Product id or name'}}, 'required': ['product']},
+        },
+    },
+    {
+        'type': 'function',
+        'function': {
+            'name': 'list_products',
+            'description': 'List the products of the library (id, name, family).',
+            'parameters': {'type': 'object', 'properties': {}, 'required': []},
+        },
+    },
     {
         'type': 'function',
         'function': {
@@ -712,7 +744,7 @@ TOOL_DEFINITIONS = [
         'type': 'function',
         'function': {
             'name': 'run_engine',
-            'description': 'Execute pricing engine calculations for the specified product and reference fertilizer, persisting a new immutable run.',
+            'description': 'Run the pricing engine for the specified product and reference fertilizer. This is a preview: nothing is saved. The user is shown a button to save it as a new version, so say that the figures are a preview awaiting their confirmation.',
             'parameters': {
                 'type': 'object',
                 'properties': {

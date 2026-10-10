@@ -3,17 +3,16 @@ import { useEffect, useState } from 'react'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/popover'
-import { DATA_END, DATA_START, clampPeriod, dayPeriod, monthPeriod, periodLabel, samePeriod, yearPeriod, type Period } from '@/engine/period'
+import { clampPeriod, currentYear, dataRange, dataYears, dayPeriod, monthPeriod, periodLabel, samePeriod, yearPeriod, type Period } from '@/engine/period'
 import { dayLong } from '@/lib/format'
 import { cn } from '@/lib/utils'
 
 type Mode = 'day' | 'month' | 'year' | 'range'
 const MODES: [Mode, string][] = [['day', 'Day'], ['month', 'Month'], ['year', 'Year'], ['range', 'Range']]
-const YEARS = [2026, 2025, 2024, 2023, 2022, 2021]
 
 function detectMode(p: Period): Mode {
   if (p.from === p.to) return 'day'
-  if (YEARS.some((y) => samePeriod(p, yearPeriod(y)))) return 'year'
+  if (dataYears().some((y) => samePeriod(p, yearPeriod(y)))) return 'year'
   const m = monthPeriod(p.from.slice(0, 7))
   if (samePeriod(p, m)) return 'month'
   return 'range'
@@ -21,6 +20,7 @@ function detectMode(p: Period): Mode {
 
 export function PeriodPicker({ value, onChange, variant = 'chip', className }: { value: Period; onChange: (p: Period) => void; variant?: 'chip' | 'field'; className?: string }) {
   const [open, setOpen] = useState(false)
+  const { from: DATA_START, to: DATA_END } = dataRange(); const YEARS = dataYears()
   const [mode, setMode] = useState<Mode>(detectMode(value))
   const [day, setDay] = useState(value.from)
   const [month, setMonth] = useState(value.from.slice(0, 7))
@@ -72,7 +72,7 @@ export function PeriodPicker({ value, onChange, variant = 'chip', className }: {
             <div className="space-y-1.5"><span className="text-[13px] text-muted-foreground">A calendar year</span>
               <div className="grid grid-cols-3 gap-1.5">
                 {YEARS.map((y) => (
-                  <button key={y} onClick={() => pick(yearPeriod(y))} className={cn('rounded-md border py-2 text-sm hover:bg-accent', samePeriod(clampPeriod(value), yearPeriod(y)) && 'border-foreground font-medium')}>{y === 2026 ? '2026 YTD' : y}</button>
+                  <button key={y} onClick={() => pick(yearPeriod(y))} className={cn('rounded-md border py-2 text-sm hover:bg-accent', samePeriod(clampPeriod(value), yearPeriod(y)) && 'border-foreground font-medium')}>{y === currentYear() ? `${y} YTD` : y}</button>
                 ))}
               </div></div>
           )}

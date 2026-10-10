@@ -12,7 +12,8 @@ import { METHOD_LABEL } from '@/engine/run'
 import { f2 } from '@/lib/format'
 import { dayShort } from '@/lib/format'
 import { report } from '@/lib/api'
-import { useApp } from '@/store/app'
+import { useApp, useReferences } from '@/store/app'
+import { currentYear } from '@/engine/period'
 import { cn } from '@/lib/utils'
 
 type Kind = 'num' | 'pct' | 'sel' | 'switch' | 'ro'
@@ -24,6 +25,7 @@ export default function Hypotheses({ data, onDone }: { data: SimData; onDone?: (
   const [draft, setDraft] = useState<Partial<RunInput>>({})
   const [comment, setComment] = useState('')
   const addRun = useApp((s) => s.addRun)
+  const refs = useReferences().join(',')
   const argus = ctx.uploads.find((u) => /argus/i.test(u.name)); const agro = ctx.uploads.find((u) => u.type === 'agro'); const crop = ctx.uploads.find((u) => u.type === 'crop')
   const wrap = useRef<HTMLDivElement>(null)
   useEffect(() => {
@@ -41,22 +43,25 @@ export default function Hypotheses({ data, onDone }: { data: SimData; onDone?: (
   const edited = (k: keyof RunInput) => k in draft && JSON.stringify(draft[k]) !== JSON.stringify(input[k])
   const set = <K extends keyof RunInput>(k: K, v: RunInput[K]) => setDraft((d) => { const n = { ...d, [k]: v }; if (JSON.stringify(v) === JSON.stringify(input[k])) delete n[k]; return n })
 
+  const yieldUnit = val('yieldGainUnit') ?? 't/ha'
   const sections: { title: string; sub: string; rows: Field[] }[] = useMemo(() => [
     { title: 'Products', sub: 'What is being priced and against what', rows: [
       { key: 'productIds', label: 'New product', kind: 'ro', prov: 'Products' },
-      { key: 'referenceId', label: 'Reference product', kind: 'sel', options: [['TSP', 'TSP'], ['DAP', 'DAP'], ['MAP', 'MAP']], prov: `Prices · ${argus ? dayShort(argus.fileDate) : '—'}` },
+      { key: 'referenceId', label: 'Reference product', kind: 'sel', options: refs.split(',').map((x) => [x, x] as [string, string]), prov: `Prices · ${argus ? dayShort(argus.fileDate) : '—'}` },
       { key: 'priceType', label: 'Reference price type', kind: 'sel', options: [['low', 'Low'], ['high', 'High']], prov: 'Parameters' }] },
     { title: 'Costing', sub: 'Built from the recipe × input prices', rows: [
-      { key: 'unitCost', label: 'Unit cost', unit: 'USD/t', kind: 'ro', prov: 'Standard cost · 2026' },
+      { key: 'unitCost', label: 'Unit cost', unit: 'USD/t', kind: 'ro', prov: `Standard cost · ${currentYear()}` },
       { key: 'marketingPct', label: 'Marketing cost', unit: '% of cost', kind: 'pct', prov: 'Parameters' },
       { key: 'fullCost', label: 'Include manufacturing & D&A', kind: 'switch', prov: 'Parameters' },
-      { key: 'dnaPerTon', label: 'D&A', unit: 'USD/t', kind: 'num', prov: 'Standard cost · 2026' }] },
+      { key: 'dnaPerTon', label: 'D&A', unit: 'USD/t', kind: 'num', prov: `Standard cost · ${currentYear()}` }] },
     { title: 'Pricing', sub: 'Method settings', rows: [
       { key: 'costPlusMargin', label: 'Cost-plus margin', unit: '%', kind: 'pct', prov: 'Parameters' },
       { key: 'anchor', label: 'Anchor method', kind: 'sel', options: (['refMinus', 'costPlus', 'value', 'market'] as const).map((m) => [m, METHOD_LABEL[m]] as [string, string]), prov: 'Default' },
       { key: 'benchmark', label: 'Market benchmark', unit: 'USD/t', kind: 'num', prov: 'Not set' }] },
     { title: 'Value pricing', sub: 'Agronomic value created', rows: [
-      { key: 'yieldGain', label: 'Yield gain vs reference', unit: 't/ha', kind: 'num', flag: 'U1', prov: `Agro trials · ${agro ? dayShort(agro.fileDate) : '—'}`, step: 0.01 },
+      { key: 'yieldGainUnit', label: 'Yield gain is in', kind: 'sel', options: [['t/ha', 't of crop per ha'], ['%', '% of the baseline yield']], prov: 'Product' },
+      ...(yieldUnit === '%' ? [{ key: 'baselineYield', label: 'Baseline yield', unit: 't/ha', kind: 'num', prov: 'You', step: 0.01 } as Field] : []),
+      { key: 'yieldGain', label: 'Yield gain vs reference', unit: yieldUnit, kind: 'num', flag: 'U1', prov: `Agro trials · ${agro ? dayShort(agro.fileDate) : '—'}`, step: 0.01 },
       { key: 'appRateNew', label: 'Application rate', unit: 't/ha', kind: 'num', prov: `Agro trials · ${agro ? dayShort(agro.fileDate) : '—'}`, step: 0.001 },
       { key: 'cropPrice', label: 'Crop price', unit: 'USD/t', kind: 'num', prov: `Crop prices · ${crop ? dayShort(crop.fileDate) : '—'}` },
       { key: 'valueShare', label: 'Value share kept by OCP', unit: '%', kind: 'pct', prov: 'Parameters' }] },
@@ -70,7 +75,7 @@ export default function Hypotheses({ data, onDone }: { data: SimData; onDone?: (
       { key: 'addressable', label: 'Addressable market', unit: 't', kind: 'ro', prov: 'Demand model' },
       { key: 'marketShare', label: 'Market share captured', unit: '%', kind: 'pct', prov: 'Agent assumption' },
       { key: 'rampTargetYear', label: 'Ramp-up target year', kind: 'num', prov: 'Parameters', step: 1 }] },
-  ], [argus, agro, crop])
+  ], [argus, agro, crop, refs, yieldUnit])
 
   const nChanges = Object.keys(draft).filter((k) => k !== 'periodTo').length
   const changedNames = Object.keys(draft).filter((k) => k !== 'periodTo').map((k) => k === 'periodFrom' ? 'Analysis period' : sections.flatMap((s) => s.rows).find((r) => r.key === k)?.label ?? (k === 'resolved' ? 'Flag confirmation' : k))

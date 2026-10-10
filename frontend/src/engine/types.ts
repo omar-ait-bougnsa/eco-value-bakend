@@ -3,6 +3,7 @@ export type Method = 'costPlus' | 'market' | 'value' | 'refMinus'
 export type RefId = 'DAP' | 'MAP' | 'TSP'
 export type PriceType = 'low' | 'high'
 export type CarbonMarket = 'voluntary' | 'cbam'
+export type YieldUnit = 't/ha' | '%'
 
 export interface Composition { N: number; P2O5: number; K2O: number; S: number } // fractions
 
@@ -15,7 +16,14 @@ export interface Product {
   pcf: number | null // t CO2 / t product
   pcfPlaceholder?: boolean
   appRate: number | null // t product / ha
-  yieldGain: number | null // t crop / ha vs reference
+  yieldGain: number | null // vs reference, in `yieldGainUnit`
+  /** Unit of `yieldGain`. Null on records made before the unit was stored. */
+  yieldGainUnit?: YieldUnit | null
+  /** t crop / ha without the product: needed when the yield gain is in %. */
+  baselineYield?: number | null
+  /** Set by the server: a quarantined product failed the validation rules and cannot be priced. */
+  status?: 'active' | 'quarantined'
+  issues?: string[]
 }
 
 export interface Snapshot {
@@ -57,7 +65,9 @@ export interface RunInput {
   valueShare: number
   priceType: PriceType
   cropPrice: number
-  yieldGain: number
+  yieldGain: number // in `yieldGainUnit`
+  yieldGainUnit?: YieldUnit
+  baselineYield?: number | null
   appRateNew: number
   appRateRef: number
   pcfNew: number
@@ -82,9 +92,12 @@ export interface Flag {
   title: string
   detail?: string
   action?: { label: string; kind: 'answer' | 'open-input' | 'open-uploads' | 'open-product' | 'add-benchmark' | 'review' | 'dismiss'; target?: string }
+  /** Answers to a flag that asks a question. `refCostOverride` goes into the run input with the answer. */
+  options?: { id: string; label: string; sub?: string | null; refCostOverride?: number | null; primary?: boolean }[] | null
 }
 
-export interface CostLine { id: IngredientId; label: string; qty: number; price: number; usd: number }
+/** `price` and `usd` are null when the period has no price for the ingredient. */
+export interface CostLine { id: IngredientId; label: string; qty: number; price: number | null; usd: number | null }
 export interface MethodResult {
   method: Method
   label: string
@@ -106,6 +119,8 @@ export interface ProductResult {
   refPrice: number | null
   refCost: number | null
   p2o5ValueRef: number | null
+  /** The yield gain the value pricing used, in t crop / ha. */
+  yieldGainTHa?: number | null
   addedValue: number
   carbonSavingPerT: number
   carbonEffect: number
@@ -117,6 +132,11 @@ export interface ProductResult {
   cgmRef: number | null
   cgmP2O5: number | null
   cgmS: number | null
+  // Comparisons with the reference. Missing on runs saved before the backend computed them.
+  cgmRefP2O5?: number | null
+  deltaVsRef?: number | null
+  costVsRef?: number | null
+  sulphurShare?: number | null // 0–1
   volume: number
   totalMargin: number | null
   methods: MethodResult[]
@@ -151,4 +171,9 @@ export interface UploadFile {
   fileDate: string
   dataThrough: string
   detail?: string
+  sizeBytes?: number | null
+  contentHash?: string | null
+  status?: 'active' | 'quarantined'
+  /** On upload: this exact file was already there, and that record came back. */
+  duplicate?: boolean
 }

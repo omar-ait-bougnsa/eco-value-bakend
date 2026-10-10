@@ -18,7 +18,10 @@ def create_simulation(body: SimulationCreate, store: Store = StoreDep):
 
 @router.get('/{sim_id}', response_model=Simulation, summary='A simulation with all its runs')
 def get_simulation(sim_id: str, store: Store = StoreDep):
-    return store.sim(sim_id)
+    from ..agent import jobs  # the agent imports the routers' engine code: imported here to keep that one-way
+    sim = store.sim(sim_id)
+    job = jobs.latest(store, sim_id)
+    return {**Simulation.model_validate(sim).model_dump(), 'job': jobs.view(job) if job else None}
 
 
 @router.patch('/{sim_id}', response_model=Simulation, summary='Rename')

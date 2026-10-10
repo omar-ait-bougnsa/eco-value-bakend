@@ -11,6 +11,9 @@ AgentEventType = Literal[
     'change',
     'citation',
     'text',
+    'job',      # the job of this turn: its id and state, when it starts and when it ends
+    'view',     # show something in the UI: an analysis period, a tab, the memo
+    'suggest',  # what the user could ask next
     'error',
     'done',
 ]
@@ -49,6 +52,7 @@ class StagedChange(BaseAgentSchema):
     patch: dict[str, Any]
     before: dict[str, Any]
     after: dict[str, Any]
+    previews: list[dict[str, str]] = Field(default_factory=list, description='What the change would move, priced without saving: label, before, after')
     status: Literal['staged', 'applied', 'dismissed'] = 'staged'
 
 

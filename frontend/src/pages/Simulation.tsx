@@ -9,7 +9,9 @@ import { Pill, bannerAction } from '@/components/sim/atoms'
 import { Button } from '@/components/ui/button'
 import { Skeleton } from '@/components/ui/skeleton'
 import { MascotIcon } from '@/components/app/MascotIcon'
-import { api, report } from '@/lib/api'
+import { api, jobEnded, report, type AgentStatus } from '@/lib/api'
+import { cancelJob, retryJob, sendMessage, watchJob } from '@/agent/chat'
+import type { Simulation } from '@/store/types'
 import { cn } from '@/lib/utils'
 import { useApp } from '@/store/app'
 import { useMedia } from '@/lib/hooks'
@@ -18,20 +20,53 @@ import Pricing from './tabs/Pricing'
 import Costing from './tabs/Costing'
 import Margin from './tabs/Margin'
 
-function Pending({ title, question }: { title: string; question: boolean }) {
-  const ui = useApp((s) => s.ui); const setUI = useApp((s) => s.setUI)
+const FAILED = { failed: 'The request failed', timed_out: 'The request timed out', cancelled: 'The request was cancelled' } as const
+
+/**
+ * A simulation without a run yet. What it shows is the stored state of its agent job, never a guess:
+ * running (with a way to stop it), waiting for an answer, failed with the reason and Retry, or simply nothing run yet.
+ */
+function Pending({ sim, question }: { sim: Simulation; question: boolean }) {
+  const ui = useApp((s) => s.ui); const setUI = useApp((s) => s.setUI); const prompts = useApp((s) => s.prompts)
+  const job = sim.job
+  const active = !!sim.busy || (!!job && !jobEnded(job))
+  const failure = !active && job && job.state in FAILED ? job : null
+  const state = question ? 'question' : active ? 'running' : failure ? (failure.state as keyof typeof FAILED) : 'idle'
+  const examples = prompts.supported.length ? prompts.supported.map((c) => c.example) : prompts.start
   return (
-    <div className="flex min-w-0 flex-1 flex-col" data-testid="sim-pending">
+    <div className="flex min-w-0 flex-1 flex-col" data-testid="sim-pending" data-state={state}>
       <div className="flex h-14 shrink-0 items-center gap-2 border-b px-4 sm:px-8">
         <button aria-label="Toggle sidebar" onClick={() => setUI({ sidebarOpen: !ui.sidebarOpen })} title="Show or hide the sidebar" className="hidden rounded-md border bg-background p-2 text-foreground hover:bg-accent md:block"><PanelLeft className="size-4" /></button>
-        <span className="text-sm text-muted-foreground">Simulations</span><span className="text-subtle">/</span><span className="truncate text-sm font-medium">{title}</span>
+        <span className="text-sm text-muted-foreground">Simulations</span><span className="text-subtle">/</span><span className="truncate text-sm font-medium">{sim.title}</span>
       </div>
       <div className="space-y-6 px-4 py-6 sm:px-8">
-        <div className="flex items-center gap-3"><h1 className="text-[28px] font-semibold leading-9 tracking-tight">{title}</h1><Pill>{question ? 'Waiting for your answer' : 'Running'}</Pill></div>
-        <p className="text-sm text-muted-foreground">{question ? 'The agent found a conflict in the sources and needs your answer in the Ask AI panel.' : 'The agent is gathering and checking the data. The simulation appears here as soon as the engine has run.'}</p>
-        <div className="grid grid-cols-2 gap-3 xl:grid-cols-4">{[0, 1, 2, 3].map((i) => <Skeleton key={i} className="h-[92px] rounded-[10px]" />)}</div>
-        <Skeleton className="h-[190px] rounded-xl" />
-        <div className="grid gap-3 lg:grid-cols-2"><Skeleton className="h-[230px] rounded-xl" /><Skeleton className="h-[230px] rounded-xl" /></div>
+        <div className="flex flex-wrap items-center gap-3">
+          <h1 className="text-[28px] font-semibold leading-9 tracking-tight">{sim.title}</h1>
+          <Pill tone={failure ? 'warning' : 'default'}>{{ question: 'Waiting for your answer', running: 'Running', failed: 'Failed', timed_out: 'Timed out', cancelled: 'Cancelled', idle: 'No run yet' }[state]}</Pill>
+          {state === 'running' && job && !jobEnded(job) && <Button size="sm" variant="outline" onClick={() => void cancelJob(sim.id)}>Cancel</Button>}
+        </div>
+        {state === 'question' && <p className="text-sm text-muted-foreground">The agent found a conflict in the sources and needs your answer in the Ask AI panel.</p>}
+        {state === 'running' && (
+          <>
+            <p className="text-sm text-muted-foreground" aria-live="polite">The agent is working on this request. It is stopped after {job ? Math.round(job.timeoutSeconds) : '…'} seconds at most, and this page then says why.</p>
+            <div className="grid grid-cols-2 gap-3 xl:grid-cols-4">{[0, 1, 2, 3].map((i) => <Skeleton key={i} className="h-[92px] rounded-[10px]" />)}</div>
+            <Skeleton className="h-[190px] rounded-xl" />
+          </>
+        )}
+        {failure && (
+          <div className="max-w-[640px] space-y-3 rounded-xl border bg-card p-5" role="alert" data-testid="job-failure">
+            <div className="text-base font-semibold">{FAILED[failure.state as keyof typeof FAILED]}</div>
+            <p className="text-sm">{failure.error ?? 'No reason was recorded.'}</p>
+            <p className="font-mono text-[12px] text-muted-foreground">Job {failure.id}{failure.failureCode ? ` · ${failure.failureCode}` : ''}</p>
+            <div className="flex gap-2"><Button onClick={() => void retryJob(sim.id)}>Retry</Button><Button variant="outline" onClick={() => setUI({ runFormOpen: true })}>Configure run</Button></div>
+          </div>
+        )}
+        {state === 'idle' && (
+          <div className="max-w-[640px] space-y-3" data-testid="sim-idle">
+            <p className="text-sm text-muted-foreground">Nothing has been priced in this simulation yet. Ask for a pricing in the Ask AI panel, or start from one of these:</p>
+            <div className="flex flex-wrap gap-2">{examples.slice(0, 6).map((e) => <Button key={e} size="sm" variant="outline" onClick={() => void sendMessage(sim.id, e)}>{e}</Button>)}</div>
+          </div>
+        )}
       </div>
     </div>
   )
@@ -66,22 +101,15 @@ function ResizeHandle({ width, onChange }: { width: number; onChange: (w: number
   )
 }
 
-/** Who answers in the chat: the backend's AI model, the built-in answers when it has none, or nobody when it is down. */
-const AGENT = {
-  llm: { label: 'AI model connected', dot: 'bg-primary' },
-  script: { label: 'No AI model · built-in answers', dot: 'bg-warning-dot' },
-  down: { label: 'Backend not reachable', dot: 'bg-danger-dot' },
-} as const
-
-/** Asked when the panel opens and again each time a turn ends, since a turn is when a model goes missing or comes back. */
-function useAgentMode(idle: boolean) {
-  const [mode, setMode] = useState<keyof typeof AGENT | null>(null)
+/** Who answers in the chat, in the backend's own words: a model, or the rule-based assistant and why. Null while asking, 'down' when it cannot be reached. */
+function useAgentStatus(idle: boolean) {
+  const [status, setStatus] = useState<AgentStatus | 'down' | null>(null)
   useEffect(() => {
     let current = true
-    api.agentStatus().then((s) => current && setMode(s.mode), () => current && setMode('down'))
+    api.agentStatus().then((s) => current && setStatus(s), () => current && setStatus('down'))
     return () => { current = false }
   }, [idle])
-  return mode
+  return status
 }
 
 export default function Simulation() {
@@ -93,7 +121,10 @@ export default function Simulation() {
   const [askMobile, setAskMobile] = useState(false)
   const [askWidth, setAskWidthState] = useState(savedAskWidth)
   const setAskWidth = (w: number) => { const c = clampAsk(w); setAskWidthState(c); try { localStorage.setItem('evs.askWidth', String(c)) } catch { /* width just won't be remembered */ } }
-  const agent = useAgentMode(!sim?.busy)
+  const agent = useAgentStatus(!sim?.busy)
+  // A job that is not streamed here (the page was reloaded while it ran) is followed until the server says it ended.
+  const jobKey = `${sim?.id}:${sim?.job?.id}:${sim?.job?.state}:${!!sim?.busy}`
+  useEffect(() => { if (id) void watchJob(id) }, [jobKey]) // eslint-disable-line react-hooks/exhaustive-deps
   const tabKey = sim?.view.tab
   // A new tab starts at its top, so its first section title is never left scrolled out of view under the tabs.
   useEffect(() => { document.getElementById('sim-scroll')?.scrollTo({ top: 0 }) }, [tabKey, id])
@@ -118,14 +149,14 @@ export default function Simulation() {
         <MascotIcon size={22} />
         <div className="min-w-0">
           <h2 className="text-sm font-semibold leading-5">Ask AI</h2>
-          <p className="flex items-center gap-1.5 truncate text-[12px] leading-4 text-muted-foreground" data-testid="agent-status" aria-live="polite">
-            <span className={cn('size-1.5 shrink-0 rounded-full', agent ? AGENT[agent].dot : 'bg-border')} />{agent ? AGENT[agent].label : 'Checking…'}
+          <p className="flex items-center gap-1.5 truncate text-[12px] leading-4 text-muted-foreground" data-testid="agent-status" aria-live="polite" title={agent && agent !== 'down' ? `Understands ${agent.capabilities}` : undefined}>
+            <span className={cn('size-1.5 shrink-0 rounded-full', !agent ? 'bg-border' : agent === 'down' ? 'bg-danger-dot' : agent.mode === 'llm' ? 'bg-primary' : 'bg-warning-dot')} />{!agent ? 'Checking…' : agent === 'down' ? 'Backend not reachable' : agent.mode === 'llm' ? `${agent.label} · ${agent.model}` : agent.label}
           </p>
         </div>
         <span className="flex-1" />
         {!pending && <Button variant="ghost" size="sm" className="gap-1.5 text-muted-foreground" onClick={closeAsk} aria-label="Close Ask AI" title="Close the AI panel (⌘/)" data-testid="ask-close"><PanelRightClose className="size-4" />Close</Button>}
       </div>
-      <Thread simId={sim.id} compact />
+      <Thread simId={sim.id} compact ruleBased={!!agent && agent !== 'down' && agent.mode === 'script'} />
     </aside>
   )
 
@@ -133,7 +164,7 @@ export default function Simulation() {
   const stale = data?.run.productSig ? data.run.input.productIds.filter((pid) => { const pr = data.ctx.products.find((x) => x.id === pid); return JSON.stringify([pr?.recipe, pr?.composition]) !== JSON.stringify(JSON.parse(data.run.productSig![pid])) }) : []
   return (
     <div className="flex min-h-0 flex-1">
-      {pending ? <Pending title={sim.title} question={question} /> : (
+      {pending ? <Pending sim={sim} question={question} /> : (
         <div className="flex min-w-0 flex-1 flex-col">
           <SimHeader data={data} askOpen={askOpen} onToggleAsk={toggleAsk} />
           {stale.length > 0 && (
@@ -142,7 +173,7 @@ export default function Simulation() {
               <button className={bannerAction} onClick={() => { useApp.getState().addRun(sim.id, { ...data.run.input, comment: 'Re-run after product change' }, 'user', 'Re-run after product change').then((r) => toast('Re-ran as v' + r.version), report) }}>Re-run</button>
             </div>
           )}
-          <div className={cn('@container min-h-0 flex-1 scroll-pt-5 space-y-12 overflow-y-auto px-4 pt-5 sm:px-8', askOpen ? 'pb-5' : 'pb-24')} id="sim-scroll">
+          <div className={cn('@container min-h-0 flex-1 scroll-pt-5 space-y-12 overflow-y-auto px-4 pt-5 transition-opacity sm:px-8', askOpen ? 'pb-5' : 'pb-24', data.loading && 'opacity-50')} id="sim-scroll" aria-busy={data.loading}>
             {data.compare && <ComparePanel data={data} />}
             {tab !== 'overview' && data.input.productIds.length > 1 && <p className="text-[13px] text-muted-foreground">Showing <b className="font-medium text-foreground">{data.result.name}</b> · change the product on the Overview tab</p>}
             {tab === 'costing' && <Costing data={data} />}

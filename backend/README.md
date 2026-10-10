@@ -92,3 +92,87 @@ tests/           Golden values from src/engine/engine.test.ts + endpoint tests
 - `POST /api/uploads/detect` reads the filename and size only; file contents are not parsed yet. `POST /api/uploads` takes no
   file either: to make a data file citable, send it to `POST /api/knowledge/documents` with the upload's id (the frontend does).
 - Agent and chat streaming are implemented under `/api/agent` and `/api/simulations/{id}/messages` (see `agent.md`).
+
+## Validation limits
+
+The server is the authority on what an input may be. The rules are in `app/limits.py`; the API returns what it refuses as
+`400 {"detail": "...", "errors": [{"field": "recipe.sulphur", "message": "must be between 0 and 3 t/t"}]}`.
+The forms read the same limits from `GET /api/limits` and check a draft with `POST /api/products/validate` and
+`POST /api/engine/validate`, so there is one set of rules, not two.
+
+**The defaults below are working assumptions, not confirmed business rules.** Change them without touching the code:
+
+```bash
+EVS_LIMITS='{"recipeQtyMax": 2.5, "pcfMax": 5}'
+```
+
+| Limit | Default | Applies to |
+|---|---|---|
+| `productNameMin` / `productNameMax` | 3 / 80 characters | Product name: trimmed, with letters, not one character repeated, unique whatever the case |
+| `recipeQtyMax` | 3 t/t | One ingredient of a recipe (the largest in the demo data is 2.18) |
+| `recipeTotalMax` | 4 t/t | All ingredients of a recipe together (the largest in the demo data is 2.76). A recipe needs at least one quantity |
+| `nutrientTotalMax` | 1 (100 %) | N + P2O5 + K2O + S; each is 0–100 % |
+| `pcfMax` | 10 t CO₂/t | Carbon footprint, 0 or more |
+| `appRateMax` | 5 t/ha | Application rates, above 0 |
+| `yieldGainMaxTHa` / `yieldGainMaxPct` | 20 t/ha / 100 % | Yield gain, in its unit |
+| `baselineYieldMax` | 100 t/ha | Baseline yield, required when the yield gain is in % |
+| `priceMax` | 10 000 USD/t | Crop price, benchmark, carbon price, reference cost override, D&A |
+| `marginMax` / `marketingMax` | 2 (200 %) / 1 (100 %) | Cost-plus margin, marketing cost |
+| `addressableMax` | 1e9 t | Addressable market |
+| `rampYearSpan` | 30 years | Ramp-up target year, from the current year |
+| `uploadMaxBytes` | 20 MB | An uploaded file |
+
+A yield gain is a quantity with a unit (`yieldGainUnit`: `t/ha` or `%`). In % it is a share of `baselineYield`, which is then required:
+`t/ha = % / 100 × baselineYield`. Products stored before the unit existed have none: runs use their value as t/ha and carry
+flag U1 until the unit is set on the product or confirmed for the run.
+
+## Uploads
+
+`POST /api/uploads` takes the file itself. The record (name, type, dates, SHA-256) is made from it; a file that is empty,
+too large, not `.xlsx`/`.csv` or not readable as what its extension says is refused. The same bytes sent again return the
+upload they already are (200, `duplicate: true`) instead of a second row.
+
+## Reviewing stored records
+
+Rules added later do not reach the rows already stored. Review them, then set aside the ones that fail:
+
+```bash
+python -m app.maintenance            # report only: nothing is changed
+python -m app.maintenance --apply    # quarantine what the report lists
+```
+
+Nothing is deleted. A quarantined product stays in the list as "Needs review" and cannot be priced until it is saved in a
+valid form, which restores it. A quarantined upload is read by nothing and is still served by
+`GET /api/uploads?includeQuarantined=true`. Every quarantine, restore and refused duplicate is in `GET /api/audit`.
+The columns this needs are added on start by `app/migrations.py` (additive, safe to run again).
+
+## Agent
+
+`GET /api/agent/status` says what answers the chat: `mode`, `provider`, `model`, `configured`, `enabled`, `fallbackReason`
+(`disabled`, `no_api_key`, `recent_failure`, `budget_exhausted`) and a `label` for the UI, never the key. Without a model
+the chat is a rule-based assistant: a fixed set of requests matched on keywords. With one, the model can only call the
+declared tools, with arguments checked against their declared schema; it prices as a preview and the user confirms the save.
+`LLM_TIMEOUT_SECONDS` (35) and `LLM_RETRIES` (1) bound each model call; calls and refused tool calls are logged by `evs.agent`.
+
+## Agent jobs
+
+Every turn of the agent (a chat message, a run of the Configure run form, an answer to its question) is a job with a stored state:
+
+```
+queued → running → completed | failed | cancelled | timed_out
+```
+
+- `POST /api/simulations/{id}/messages` starts the job and streams its events. The first and last event are `job`; its id is also in the `X-Job-Id` header.
+- The job belongs to the server, not to that response: a closed tab does not stop it. `GET /api/jobs/{id}` gives its state, `GET /api/simulations/{id}` its latest job (`job`), `GET /api/simulations/{id}/jobs` its history, `POST /api/jobs/{id}/cancel` stops it.
+- A job stores its transitions with their times, a `failureCode` (`invalid_input`, `request_refused`, `internal_error`, `timed_out`, `cancelled`, `lost`) and an `error` that is safe to show. The cause of an `internal_error` is in the server log under the job id, never in the response.
+- Nothing stays `running`: a job is ended as `timed_out` after `AGENT_JOB_TIMEOUT_SECONDS` (120), and one the server lost in a restart is ended (`lost`) the first time it is read after that time.
+- To retry, send `request` of the job again.
+
+| Setting | Default | |
+|---|---|---|
+| `OPENROUTER_API_KEY`, `OPENROUTER_MODEL` | none, `anthropic/claude-sonnet-5.5` | The model. In `.env` at the repository root (or `backend/.env`), read by the server only |
+| `LLM_ENABLED` | `true` | `false` forces the rule-based assistant |
+| `LLM_TIMEOUT_SECONDS`, `LLM_RETRIES` | 35, 1 | One model call |
+| `LLM_MAX_TURNS_PER_MINUTE` | 30 | Above it, turns go to the rule-based assistant |
+| `AGENT_JOB_TIMEOUT_SECONDS` | 120 | One whole job |
+| `LOG_LEVEL` | `INFO` | Loggers `evs.jobs` (transitions) and `evs.agent` (model calls, refused tool calls), each line with the job id |

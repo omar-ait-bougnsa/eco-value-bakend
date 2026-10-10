@@ -18,9 +18,9 @@ export function UploadReviewSheet() {
   const [found, setFound] = useState<Found | null>(null)
   const input = useRef<HTMLInputElement>(null)
   const [reading, setReading] = useState('')
-  const [picked, setPicked] = useState<File | null>(null) // the built-in sample has no content, so it is not kept
-  const start = async (file: File, sample = false) => {
-    setStage('reading'); setFound(null); setReading(file.name); setPicked(sample ? null : file)
+  const [picked, setPicked] = useState<File | null>(null)
+  const start = async (file: File) => {
+    setStage('reading'); setFound(null); setReading(file.name); setPicked(file)
     try { setFound(await api.detectUpload(file)); setStage('found') } catch (e) { report(e); setStage('pick') }
   }
   useEffect(() => {
@@ -29,11 +29,13 @@ export function UploadReviewSheet() {
   }, [open]) // eslint-disable-line react-hooks/exhaustive-deps
   const close = () => setUI({ uploadReviewOpen: false })
   const use = async () => {
-    if (!found) return
+    if (!found || !picked || found.problems.length) return
     let saved
-    try { saved = await add({ name: found.name, type: found.type, fileDate: found.fileDate, dataThrough: found.dataThrough, detail: found.series }) } catch (e) { report(e); return }
+    // The file itself is sent: the server reads it again and makes the record from it. Nothing typed here is trusted.
+    try { saved = await add(picked) } catch (e) { report(e); return }
+    if (saved.duplicate) { close(); toast('Already uploaded', { description: `${saved.name} is this same file. Nothing was added.` }); return }
     // The file also goes to the knowledge base, so the agent can cite it. The data is in use either way.
-    if (picked) api.indexDocument(picked, saved.id).catch(report)
+    api.indexDocument(picked, saved.id).catch(report)
     close(); toast('Data added', { description: found.resolves ? 'The prices/freight discrepancy flag is resolved.' : found.name })
   }
   return (
@@ -45,15 +47,13 @@ export function UploadReviewSheet() {
           {stage === 'pick' && (
             <div className="space-y-3">
               <button onClick={() => input.current?.click()} className="flex w-full flex-col items-center gap-2 rounded-xl border border-dashed p-8 text-center hover:bg-accent"><Upload className="size-5" /><span className="text-sm font-medium">Choose a file</span><span className="text-[13px] text-muted-foreground">.xlsx or .csv · Prices, freight, agro tests, crop prices</span></button>
-              <input ref={input} type="file" accept=".xlsx,.xls,.csv" hidden onChange={(e) => { const f = e.target.files?.[0]; if (f) void start(f) }} />
-              <div className="text-center text-[13px] text-muted-foreground">or try a sample</div>
-              <Button variant="outline" className="w-full justify-start gap-2" onClick={() => void start(new File([new Uint8Array(48 * 1024)], 'argus-fob-morocco-30-09-2026.xlsx'), true)}><FileText className="size-4" />argus-fob-morocco-30-09-2026.xlsx</Button>
+              <input ref={input} type="file" accept=".xlsx,.csv" hidden onChange={(e) => { const f = e.target.files?.[0]; if (f) void start(f) }} />
             </div>
           )}
           {stage === 'reading' && <p className="text-sm text-muted-foreground">Reading “{reading}”…</p>}
           {found && stage === 'found' && (
             <>
-              <div className="flex items-center gap-3 rounded-[10px] border p-3"><FileText className="size-5" /><div className="min-w-0 flex-1"><div className="truncate text-sm font-medium">{found.name}</div><div className="text-[13px] text-muted-foreground">{found.size}</div></div><Pill><Check className="size-3" />Read</Pill></div>
+              <div className="flex items-center gap-3 rounded-[10px] border p-3"><FileText className="size-5" /><div className="min-w-0 flex-1"><div className="truncate text-sm font-medium">{found.name}</div><div className="text-[13px] text-muted-foreground">{found.size}</div></div>{found.problems.length ? <Pill tone="warning">Refused</Pill> : <Pill><Check className="size-3" />Read</Pill>}</div>
               {stage === 'found' && (
                 <>
                   <div className="overflow-hidden rounded-[10px] border text-sm">
@@ -61,6 +61,8 @@ export function UploadReviewSheet() {
                       <div key={k} className="flex gap-3 border-b px-3.5 py-2.5"><span className="w-[110px] shrink-0 text-muted-foreground">{k}</span><span className={`font-medium ${mono ? 'num' : ''}`}>{v}</span></div>))}
                     <div className="flex gap-3 px-3.5 py-2.5"><span className="w-[110px] shrink-0 text-muted-foreground">Affects</span><span className="flex flex-wrap gap-1.5">{found.affects.map((a) => <SourceChip key={a}>{a}</SourceChip>)}</span></div>
                   </div>
+                  {found.problems.length > 0 && <div className="flex items-start gap-2.5 rounded-lg bg-danger-bg p-3 text-danger-fg" role="alert"><TriangleAlert className="mt-0.5 size-4" /><div><div className="text-sm font-medium">This file cannot be used</div><ul className="text-[13px] opacity-90">{found.problems.map((p) => <li key={p}>The file {p}.</li>)}</ul></div></div>}
+                  {found.duplicateOf && <div className="flex items-start gap-2.5 rounded-lg bg-muted p-3" role="status"><Check className="mt-0.5 size-4" /><div><div className="text-sm font-medium">Already uploaded</div><div className="text-[13px] text-muted-foreground">This exact file is in the list. Using it again adds nothing.</div></div></div>}
                   {found.resolves && <div className="flex items-start gap-2.5 rounded-lg bg-muted p-3"><Check className="mt-0.5 size-4" /><div><div className="text-sm font-medium">Resolves a flag</div><div className="text-[13px] text-muted-foreground">With this file, prices and freight are close enough in date: the discrepancy warning goes away.</div></div></div>}
                   {found.warn && <div className="flex items-start gap-2.5 rounded-lg bg-warning-bg p-3 text-warning-fg"><TriangleAlert className="mt-0.5 size-4" /><div><div className="text-sm font-medium">{found.warn.split('. ')[0]}</div><div className="text-[13px] opacity-80">{found.warn.split('. ').slice(1).join('. ')}</div></div></div>}
                 </>
@@ -68,7 +70,7 @@ export function UploadReviewSheet() {
             </>
           )}
         </div>
-        <div className="flex h-16 shrink-0 items-center justify-end gap-2 border-t px-5"><Button variant="ghost" onClick={close}>Cancel</Button><Button onClick={use} disabled={stage !== 'found'}>Use this data</Button></div>
+        <div className="flex h-16 shrink-0 items-center justify-end gap-2 border-t px-5"><Button variant="ghost" onClick={close}>Cancel</Button><Button onClick={use} disabled={stage !== 'found' || !found || found.problems.length > 0}>Use this data</Button></div>
       </SheetContent>
     </Sheet>
   )

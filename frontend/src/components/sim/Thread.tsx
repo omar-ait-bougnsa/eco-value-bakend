@@ -10,7 +10,8 @@ import { ScrollButton } from '@/components/ui/scroll-button'
 import { Steps, StepsContent, StepsItem, StepsTrigger } from '@/components/ui/steps'
 import { TextShimmer } from '@/components/ui/text-shimmer'
 import { SystemMessage } from '@/components/ui/system-message'
-import { applyChange, answerQuestion, dismissChange, handleMessage, SUGGESTIONS } from '@/agent/script'
+import { applyChange, answerQuestion, dismissChange, retryJob, sendMessage } from '@/agent/chat'
+import { jobEnded } from '@/lib/api'
 import { useApp } from '@/store/app'
 import type { Msg } from '@/store/types'
 import { f2 } from '@/lib/format'
@@ -45,7 +46,7 @@ function ToolRow({ label }: { label: string }) {
 }
 
 function Row({ m, simId, compact, lead }: { m: Msg; simId: string; compact?: boolean; lead?: boolean }) {
-  const send = (t: string) => void handleMessage(simId, t)
+  const send = (t: string) => void sendMessage(simId, t)
   if (m.kind === 'user')
     return (
       <div className="flex justify-end pt-4 first:pt-0">
@@ -70,7 +71,7 @@ function Row({ m, simId, compact, lead }: { m: Msg; simId: string; compact?: boo
     return (
       <Assistant lead={lead}>
         <Steps defaultOpen className="rounded-[10px] border bg-background px-3 py-2.5" aria-live="polite">
-          <StepsTrigger className="text-[13px] font-medium text-muted-foreground">{done ? `Finished in ${m.steps.length} steps` : 'Working…'}</StepsTrigger>
+          <StepsTrigger className="text-[13px] font-medium text-muted-foreground">{done ? `Finished in ${m.steps.length} step${m.steps.length === 1 ? '' : 's'}` : 'Working…'}</StepsTrigger>
           <StepsContent>
             <div className="mt-2 space-y-1.5">
               {m.steps.map((s, i) => {
@@ -187,7 +188,7 @@ export function Composer({ simId, placeholder, onSend, disabled, compact, autoFo
     if (!t || disabled) return
     setV('')
     if (onSend) { await onSend(t); return }
-    const id = await handleMessage(simId, t)
+    const id = await sendMessage(simId, t)
     if (!simId && id) nav(`/s/${id}`)
   }
   return (
@@ -211,8 +212,8 @@ export function Composer({ simId, placeholder, onSend, disabled, compact, autoFo
   )
 }
 
-export function Thread({ simId, compact, className }: { simId: string; compact?: boolean; className?: string }) {
-  const sim = useApp((s) => s.sims[simId])
+export function Thread({ simId, compact, className, ruleBased }: { simId: string; compact?: boolean; className?: string; /** No AI model: a fixed set of requests is understood, not free text. */ ruleBased?: boolean }) {
+  const sim = useApp((s) => s.sims[simId]); const prompts = useApp((s) => s.prompts)
   const pendingQ = sim?.thread.some((m) => m.kind === 'question' && !m.answered)
   if (!sim) return null
   return (
@@ -224,11 +225,11 @@ export function Thread({ simId, compact, className }: { simId: string; compact?:
               <MascotIcon size={48} />
               <div>
                 <div className="text-[15px] font-semibold">Ask about this simulation</div>
-                <p className="mx-auto mt-1 max-w-[300px] text-[13px] leading-5 text-muted-foreground">I can price a product, test a what-if, explain a figure, or look in your documents. Nothing changes until you confirm it.</p>
+                <p className="mx-auto mt-1 max-w-[300px] text-[13px] leading-5 text-muted-foreground">{ruleBased ? 'No AI model is configured: I answer a fixed set of requests, like the ones below, and do not understand free text.' : 'I can price a product, test a what-if, explain a figure, or look in your documents. Nothing changes until you confirm it.'}</p>
               </div>
               <div className="flex flex-wrap justify-center gap-2 pt-1">
-                {(sim.runs.length ? SUGGESTIONS : ['Price Phosfusion 65-35 against TSP', 'What do the reports say about freight?']).map((s) => (
-                  <PromptSuggestion key={s} onClick={() => void handleMessage(simId, s)} className="h-auto rounded-lg py-1.5 text-sm">{s}</PromptSuggestion>
+                {(ruleBased ? prompts.supported.map((c) => c.example).slice(0, 6) : sim.runs.length ? prompts.next : [...prompts.start.slice(0, 1), 'What do the reports say about freight?']).map((s) => (
+                  <PromptSuggestion key={s} onClick={() => void sendMessage(simId, s)} className="h-auto rounded-lg py-1.5 text-sm">{s}</PromptSuggestion>
                 ))}
               </div>
             </div>
@@ -237,11 +238,20 @@ export function Thread({ simId, compact, className }: { simId: string; compact?:
           {sim.busy && !pendingQ && sim.thread[sim.thread.length - 1]?.kind === 'user' && (
             <Assistant lead><TextShimmer className="text-sm">Thinking…</TextShimmer></Assistant>
           )}
+          {/* The stored state of the last request, when it is not the happy path: still running after a reload, or ended without an answer. */}
+          {!sim.busy && sim.job && !jobEnded(sim.job) && <Assistant lead><TextShimmer className="text-sm">Still running on the server…</TextShimmer></Assistant>}
+          {!sim.busy && sim.job && ['failed', 'timed_out', 'cancelled'].includes(sim.job.state) && (
+            <div className="rounded-[10px] border border-danger-dot/40 bg-danger-bg p-3 text-sm text-danger-fg" role="alert" data-testid="thread-failure">
+              <div className="font-medium">{sim.job.state === 'timed_out' ? 'The request timed out' : sim.job.state === 'cancelled' ? 'The request was cancelled' : 'The request failed'}</div>
+              <div className="mt-0.5 text-[13px]">{sim.job.error}</div>
+              <div className="mt-2 flex items-center gap-3"><Button size="sm" variant="outline" onClick={() => void retryJob(simId)}>Retry</Button><span className="font-mono text-[12px] opacity-80">Job {sim.job.id}</span></div>
+            </div>
+          )}
         </ChatContainerContent>
         <div className="pointer-events-none absolute bottom-3 right-4"><ScrollButton className="pointer-events-auto" /></div>
       </ChatContainerRoot>
       <div className={cn('mx-auto w-full px-4 pb-4 pt-1', compact ? 'max-w-full' : 'max-w-[760px]')}>
-        <Composer simId={simId} compact={compact} disabled={sim.busy || pendingQ} placeholder={pendingQ ? 'Answer the question above to continue' : 'Ask about this simulation…'} />
+        <Composer simId={simId} compact={compact} disabled={sim.busy || pendingQ || (!!sim.job && !jobEnded(sim.job))} placeholder={pendingQ ? 'Answer the question above to continue' : ruleBased ? 'Type one of the supported requests…' : 'Ask about this simulation…'} />
       </div>
     </div>
   )

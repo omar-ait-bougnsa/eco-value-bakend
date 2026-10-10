@@ -39,7 +39,7 @@ def test_search():
     only = client.post('/api/knowledge/search', json={'query': 'freight Jorf Lasfar Santos', 'docType': 'agronomy'}).json()
     assert only['results'] == []
     for bad in ({'query': ''}, {'query': 'x', 'limit': 0}, {'query': 'x', 'docType': 'gossip'}, {}):
-        assert client.post('/api/knowledge/search', json=bad).status_code == 422
+        assert client.post('/api/knowledge/search', json=bad).status_code == 400
 
 
 def test_a_document_is_indexed_found_and_removed():
@@ -80,8 +80,8 @@ def test_the_fields_of_the_form_override_what_is_detected():
 @pytest.mark.parametrize('name, data, form, status, says', [
     ('prices.xls', b'\xd0\xcf\x11\xe0', {}, 415, 'save the file as .xlsx'),
     ('archive.zip', b'PK', {}, 415, 'Only .pdf'),
-    ('broken.pdf', b'not a pdf', {}, 422, 'could not be read'),
-    ('empty.txt', b'   ', {}, 422, 'No text found'),
+    ('broken.pdf', b'not a pdf', {}, 400, 'could not be read'),
+    ('empty.txt', b'   ', {}, 400, 'No text found'),
     ('note.txt', b'Some text.', {'uploadId': 'u-missing'}, 404, "Upload 'u-missing' not found"),
 ])
 def test_files_that_are_refused(name, data, form, status, says):

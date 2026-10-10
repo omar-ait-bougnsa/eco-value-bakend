@@ -156,7 +156,7 @@ def validate_agent_text(
 
     # 2. Currency unit enforcement
     # If the text quotes prices/costs, ensure USD/t or USD/yr is mentioned
-    if numbers and not re.search(r'USD\s*/\s*t|USD\s*/\s*yr|\$', text, re.IGNORECASE):
+    if numbers and re.search(r'price|cost|margin|anchor|cgm|floor|ceiling', text, re.IGNORECASE) and not re.search(r'USD\s*/\s*t|USD\s*/\s*yr|\$', text, re.IGNORECASE):
         errors.append('Currency figures must include explicit units (e.g. USD/t).')
 
     return ValidationResult(is_valid=(len(errors) == 0), errors=errors)
@@ -179,8 +179,9 @@ def render_fallback_template(facts: dict[str, ToolFact], intent: str = 'hero') -
     val_price_str = f'{val_price.value:.2f} USD/t' if val_price else 'N/A'
 
     return (
-        f'Recommended anchor: {anchor_val} (Reference-minus). '
-        f'That is below the cost-plus floor of {floor_val}. '
+        f'Recommended anchor: {anchor_val}. '
+        + ('' if not (anchor and floor) else f'That is below the cost-plus floor of {floor_val}. ' if anchor.value < floor.value else f'That sits above the cost-plus floor of {floor_val}. ')
+        +
         f'At this price, the new product earns {cgm_val} against the reference CGM of {cgm_ref_val}. '
         f'Value pricing allows up to {val_price_str} based on {added_val_str} of agronomic value created.'
     )

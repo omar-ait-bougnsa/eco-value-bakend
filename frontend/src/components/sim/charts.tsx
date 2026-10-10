@@ -88,9 +88,9 @@ export function RampChart({ ramp, share }: { ramp: ProductResult['ramp']; share:
             <path d={line} fill="none" className="stroke-primary" strokeWidth={1.75} strokeLinejoin="round" />
             <circle cx={X(peak)} cy={Y(ramp[peak].kt)} r={3.5} className="fill-primary" />
             <T x={X(peak) + 8} y={Y(ramp[peak].kt) - 8} mono muted={false} size={12}>{Math.round(share * 1000) / 10}% share · {f1(ramp[peak].kt)} kt</T>
-            <T x={x0} y={yb + 18} size={11}>2026</T>
+            <T x={x0} y={yb + 18} size={11}>{ramp[0].year}</T>
             <T x={X(peak)} y={yb + 18} anchor="middle" size={11}>{ramp[peak].year}</T>
-            <T x={x1} y={yb + 18} anchor="end" size={11}>2035</T>
+            <T x={x1} y={yb + 18} anchor="end" size={11}>{ramp[ramp.length - 1].year}</T>
           </g>
         )
       }}
@@ -182,7 +182,7 @@ export function CarbonChart({ r, carbonPrice, onSet }: { r: ProductResult; carbo
 
 const ING_FILL: Record<string, string> = { sulphur: 'fill-anchor', rockDry: 'fill-chart-2', rockWet: 'fill-chart-3', ammonia: 'fill-chart-1', kcl: 'fill-reference', acp: 'fill-border' }
 export function CostStack({ rows }: { rows: { label: string; lines: CostLine[]; extra?: { label: string; usd: number }[] }[] }) {
-  const maxTotal = Math.max(...rows.map((r) => r.lines.reduce((a, l) => a + l.usd, 0) + (r.extra?.reduce((a, e) => a + e.usd, 0) ?? 0)), 1)
+  const maxTotal = Math.max(...rows.map((r) => r.lines.reduce((a, l) => a + (l.usd ?? 0), 0) + (r.extra?.reduce((a, e) => a + e.usd, 0) ?? 0)), 1)
   return (
     <Sized h={20 + rows.length * 54}>
       {(w) => {
@@ -192,16 +192,16 @@ export function CostStack({ rows }: { rows: { label: string; lines: CostLine[]; 
             {rows.map((r, ri) => {
               const y = 10 + ri * 54
               let x = x0
-              const total = r.lines.reduce((a, l) => a + l.usd, 0) + (r.extra?.reduce((a, e) => a + e.usd, 0) ?? 0)
+              const total = r.lines.reduce((a, l) => a + (l.usd ?? 0), 0) + (r.extra?.reduce((a, e) => a + e.usd, 0) ?? 0)
               return (
                 <g key={r.label}>
                   <T x={0} y={y + 20} muted={false} size={13} strong>{r.label}</T>
-                  {[...r.lines.map((l) => ({ id: l.id, label: l.label, usd: l.usd })), ...(r.extra ?? []).map((e) => ({ id: 'acp', label: e.label, usd: e.usd }))].map((l) => {
-                    const wd = sc(l.usd); const xx = x; x += wd + 1
+                  {[...r.lines.map((l) => ({ id: l.id, label: l.label, usd: (l.usd ?? 0) })), ...(r.extra ?? []).map((e) => ({ id: 'acp', label: e.label, usd: e.usd }))].map((l) => {
+                    const wd = sc((l.usd ?? 0)); const xx = x; x += wd + 1
                     return (
                       <g key={l.label}>
                         <rect x={xx} y={y} width={wd} height={30} className={ING_FILL[l.id] ?? 'fill-border'} />
-                        {wd > 54 && <T x={xx + wd / 2} y={y + 19} anchor="middle" mono size={12} muted={false}><tspan className={l.id === 'sulphur' || l.id === 'rockDry' || l.id === 'ammonia' ? 'fill-white' : 'fill-foreground'}>{f2(l.usd)}</tspan></T>}
+                        {wd > 54 && <T x={xx + wd / 2} y={y + 19} anchor="middle" mono size={12} muted={false}><tspan className={l.id === 'sulphur' || l.id === 'rockDry' || l.id === 'ammonia' ? 'fill-white' : 'fill-foreground'}>{f2((l.usd ?? 0))}</tspan></T>}
                       </g>
                     )
                   })}
@@ -239,9 +239,11 @@ export function TrendLines() {
   return (
     <Sized h={230}>
       {(w) => {
-        const xs = 42, xe = w - 78, yb = 200, yt = 14, mx = 950
-        const X = (i: number) => xs + ((xe - xs) * i) / 8, Y = (v: number) => yb - ((yb - yt) * v) / mx
-        const ends = series.map(([, v]) => Y(v[8])).sort((a, b) => a - b)
+        const last = OUTLOOK.years.length - 1
+        // The axis tops out just above the highest price of the outlook.
+        const xs = 42, xe = w - 78, yb = 200, yt = 14, mx = Math.ceil((Math.max(...series.flatMap(([, v]) => v), 1) * 1.05) / 150) * 150
+        const X = (i: number) => xs + ((xe - xs) * i) / Math.max(last, 1), Y = (v: number) => yb - ((yb - yt) * v) / mx
+        const ends = series.map(([, v]) => Y(v[last])).sort((a, b) => a - b)
         return (
           <g>
             {[0, 1, 2, 3].map((i) => (<g key={i}><line x1={xs} x2={xe + 30} y1={yb - ((yb - yt) * i) / 3} y2={yb - ((yb - yt) * i) / 3} className="stroke-border" /><T x={xs - 6} y={yb - ((yb - yt) * i) / 3 + 3} anchor="end" size={11}>{Math.round((mx * i) / 3 / 50) * 50}</T></g>))}
@@ -251,10 +253,10 @@ export function TrendLines() {
               </g>
             ))}
             {series.map(([n, v]) => {
-              const idx = ends.indexOf(Y(v[8]))
-              return <T key={n} x={X(8) + 8} y={ends[0] + idx * 15 + 4} mono muted={false} size={12}>{n} {v[8]}</T>
+              const idx = ends.indexOf(Y(v[last]))
+              return <T key={n} x={X(last) + 8} y={ends[0] + idx * 15 + 4} mono muted={false} size={12}>{n} {v[last]}</T>
             })}
-            {[0, 2, 4, 6, 8].map((i) => <T key={i} x={X(i)} y={yb + 18} anchor="middle" size={11}>{OUTLOOK.years[i]}</T>)}
+            {OUTLOOK.years.map((y, i) => (i % 2 === 0 ? <T key={y} x={X(i)} y={yb + 18} anchor="middle" size={11}>{y}</T> : null))}
           </g>
         )
       }}

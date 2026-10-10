@@ -2,7 +2,7 @@ from datetime import date
 
 from fastapi import APIRouter, HTTPException, Query
 
-from ..data.seed import OUTLOOK
+from ..data.seed import DATA_START, OUTLOOK, TODAY
 from ..engine.period import Span, blend_snapshot, clamp_period, period_label, period_presets, period_weights
 from ..schemas import Outlook, Period, PeriodPreset, ResolvedSnapshot, Snapshot
 from ..store import Store, StoreDep
@@ -19,7 +19,7 @@ def list_snapshots(store: Store = StoreDep):
 @router.get('/snapshots/resolve', response_model=ResolvedSnapshot, summary='Market data for an analysis period: day-weighted blend of the yearly snapshots')
 def resolve(period_from: date = Query(alias='periodFrom'), period_to: date = Query(alias='periodTo'), store: Store = StoreDep):
     if period_from > period_to:
-        raise HTTPException(422, 'periodFrom must not be after periodTo')
+        raise HTTPException(400, 'periodFrom must not be after periodTo')
     p = clamp_period(Span(period_from, period_to))
     return ResolvedSnapshot(period=Period(from_=p.start, to=p.end), label=period_label(p), weights=period_weights(p), snapshot=blend_snapshot(store.snapshots(), p))
 
@@ -35,6 +35,11 @@ def get_snapshot(snapshot_id: str, store: Store = StoreDep):
 @router.get('/periods/presets', response_model=list[PeriodPreset], summary='Period picker presets (year to date, last 12 months, past years)')
 def presets():
     return [PeriodPreset(id=i, label=l, period=Period(from_=p.start, to=p.end)) for i, l, p in period_presets()]
+
+
+@router.get('/periods/range', response_model=Period, summary='First and last day the market data covers. The last day is "today" for the simulator')
+def data_range():
+    return Period(from_=DATA_START, to=TODAY)
 
 
 @router.get('/outlook', response_model=Outlook, summary='Input price outlook 2026–2034')

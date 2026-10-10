@@ -15,6 +15,8 @@ class Span(NamedTuple):
 
 CURRENT_YEAR = DATA_END.year
 YTD = Span(date(CURRENT_YEAR, 1, 1), DATA_END)
+PAST = Span(date(DATA_START.year, 1, 1), date(CURRENT_YEAR - 1, 12, 31))  # every full year of data
+PAST_LABEL = f'{PAST.start.year}–{PAST.end.year}'
 MON = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec']
 
 
@@ -46,7 +48,7 @@ def period_presets() -> list[tuple[str, str, Span]]:
         ('ytd', 'Year to date', YTD),
         ('l12', 'Last 12 months', last_12_months()),
         *[(str(y), str(y), year_period(y)) for y in range(CURRENT_YEAR - 1, DATA_START.year - 1, -1)],
-        ('2021-25', '2021–2025', Span(date(2021, 1, 1), date(2025, 12, 31))),
+        (f'{PAST.start.year}-{PAST.end.year % 100:02d}', PAST_LABEL, PAST),
     ]
 
 
@@ -107,8 +109,8 @@ def period_label(p0: Span) -> str:
         return 'Year to date'
     if p == last_12_months():
         return 'Last 12 months'
-    if p == Span(date(2021, 1, 1), date(2025, 12, 31)):
-        return '2021–2025'
+    if p == PAST:
+        return PAST_LABEL
     if p.start.year < CURRENT_YEAR and p == year_period(p.start.year):
         return str(p.start.year)
     if p.start == p.end:

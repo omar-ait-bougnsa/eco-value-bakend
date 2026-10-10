@@ -1,5 +1,7 @@
 import { useMemo } from 'react'
-import { METHOD_LABEL, runProduct } from '@/engine/run'
+import { METHOD_LABEL } from '@/engine/run'
+import { api } from '@/lib/api'
+import { useQuery } from '@/lib/query'
 import type { Method, MethodResult } from '@/engine/types'
 import { f2, millions, sign } from '@/lib/format'
 import { cn } from '@/lib/utils'
@@ -14,10 +16,10 @@ export function PivotTable({ data, pin: pinOverride }: { data: SimData; pin?: 'p
   const { sim, input, ctx, result } = data
   const { metric, strategy } = sim.view
   const pin = pinOverride ?? sim.view.pin
-  const all = useMemo(() => {
-    const ids = Array.from(new Set([...input.productIds, ...ctx.products.filter((p) => p.family === 'phosfusion').map((p) => p.id)]))
-    return ids.map((id) => runProduct(input, ctx, id))
-  }, [input, ctx])
+  // Comparing products needs every Phosfusion product priced on this input: the backend runs them, the run's own products show meanwhile.
+  const ids = useMemo(() => Array.from(new Set([...input.productIds, ...ctx.products.filter((p) => p.family === 'phosfusion').map((p) => p.id)])), [input.productIds, ctx.products])
+  const others = useQuery(pin === 'product' ? null : `pivot:${JSON.stringify([input, ids])}`, () => api.engineRun({ ...input, productIds: ids }).then((r) => r.output.perProduct))
+  const all = (others.data ? ids : input.productIds).map((id) => (others.data ?? data.out.perProduct)[id]).filter(Boolean)
   const methods = (['costPlus', 'refMinus', 'value', 'market'] as Method[]).filter((m) => input.methods.includes(m))
   const th = 'whitespace-nowrap px-3 py-2.5 text-right text-[13px] font-medium text-muted-foreground'
   const td = 'whitespace-nowrap px-3 py-3 text-right num text-sm'
@@ -57,7 +59,7 @@ export function PivotTable({ data, pin: pinOverride }: { data: SimData; pin?: 'p
               <td className={td}>{r.delta == null ? '—' : sign(r.delta)}</td>
             </tr>
           ))}
-          <tr><td className="px-3 py-3 text-sm text-muted-foreground">{input.referenceId} · reference (price {f2(result.refPrice)})</td><td className={td}>{f2(result.refPrice)}</td><td className={td}>{f2(result.refCost)}</td><td className={td}>{f2(result.cgmRef)}</td><td className={td}>{result.refPrice != null && result.cgmRef != null ? f2(result.cgmRef / (ctx.products.find((p) => p.id === input.referenceId)?.composition.P2O5 || 1)) : '—'}</td><td className={td}>—</td><td className={td}>—</td></tr>
+          <tr><td className="px-3 py-3 text-sm text-muted-foreground">{input.referenceId} · reference (price {f2(result.refPrice)})</td><td className={td}>{f2(result.refPrice)}</td><td className={td}>{f2(result.refCost)}</td><td className={td}>{f2(result.cgmRef)}</td><td className={td}>{f2(result.cgmRefP2O5)}</td><td className={td}>—</td><td className={td}>—</td></tr>
         </tbody>
       </table>
     </div>

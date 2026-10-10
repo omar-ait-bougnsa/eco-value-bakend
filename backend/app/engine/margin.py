@@ -82,7 +82,7 @@ def calc_waterfall(
     return [
         WaterfallStep(label=f'{ref_name} CGM', from_=0.0, to=cgm_ref, value=cgm_ref, kind='total'),
         WaterfallStep(label=f'Price vs {ref_name}', from_=cgm_ref, to=cgm_ref + d_price, value=d_price, kind='delta'),
-        WaterfallStep(label='Raw-material savings', from_=cgm_ref + d_price, to=cgm_ref + d_price + d_cost, value=d_cost, kind='delta'),
+        WaterfallStep(label='Cost savings', from_=cgm_ref + d_price, to=cgm_ref + d_price + d_cost, value=d_cost, kind='delta'),
         WaterfallStep(label='New product CGM', from_=0.0, to=cgm, value=cgm, kind='total'),
     ]
 

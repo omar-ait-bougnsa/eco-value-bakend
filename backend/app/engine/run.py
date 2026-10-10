@@ -4,9 +4,9 @@ import re
 from dataclasses import dataclass
 from datetime import date
 
-from ..data.seed import DECK_TSP_COST, INGREDIENTS, TODAY
+from ..data.seed import DECK_TSP_COST, INGREDIENTS
 from ..schemas import (
-    CarbonScenario, CostLine, Flag, FlagAction, InputChange, MethodResult, Parameters, Product, ProductResult,
+    CarbonScenario, CostLine, Flag, FlagAction, FlagOption, InputChange, MethodResult, Parameters, Product, ProductResult,
     RampPoint, RunInput, RunOutput, Snapshot, UploadRecord, WaterfallStep,
 )
 from .cost import calc_raw_material_cost, calc_unit_costs
@@ -105,8 +105,10 @@ def run_product(input: RunInput, ctx: Ctx, product_id: str) -> ProductResult:
         k2o_per_kcl=K2O_PER_KCL,
     )
 
+    # The yield gain as a quantity in t crop / ha: a gain in % is a share of the baseline yield.
+    yield_t_ha = input.yieldGain * (input.baselineYield or 0) / 100 if input.yieldGainUnit == '%' else input.yieldGain
     agro_data = AgronomyData(
-        yield_gain=input.yieldGain,
+        yield_gain=yield_t_ha,
         app_rate_new=input.appRateNew,
         app_rate_ref=input.appRateRef,
         crop_price=input.cropPrice,
@@ -129,13 +131,15 @@ def run_product(input: RunInput, ctx: Ctx, product_id: str) -> ProductResult:
     floor = cost_plus
     ceiling = value if value is not None else cost_plus
 
-    # Legacy workbook CGM compatibility for run.py
-    cgm_of = lambda price: calc_cgm(price, unit_cost, marketing, mode='workbook')
+    # Correction X2 (engine.md): marketing stays a cost. The workbook adds it back, which cancels it.
+    cgm_of = lambda price: calc_cgm(price, unit_cost, marketing, mode='corrected')
     cgm_ref = ref_price - ref_cost if ref_price is not None else None
     volume = input.addressable * input.marketShare
     cgm = cgm_of(anchor_price)
 
     cgm_p2o5, cgm_s = calc_nutrient_cgms(cgm, p.composition.P2O5, p.recipe.get('sulphur', 0.0))
+    cgm_ref_p2o5, _ = calc_nutrient_cgms(cgm_ref, ref.composition.P2O5, 0.0)
+    sulphur_usd = sum(l.usd for l in lines if l.id == 'sulphur')
 
     methods = []
     for m in ('costPlus', 'refMinus', 'value', 'market'):
@@ -155,7 +159,7 @@ def run_product(input: RunInput, ctx: Ctx, product_id: str) -> ProductResult:
         anchor_price=anchor_price,
         ref_price=ref_price,
         ref_cost=ref_cost,
-        cost_for_margin=cost_for_margin,
+        cost_for_margin=unit_cost,  # the cost the margin is taken over, so the bridge ends on the product's CGM
         cgm=cgm,
     )
     ramp = calc_ramp(volume, current_year=CURRENT_YEAR, ramp_target_year=input.rampTargetYear)
@@ -167,11 +171,16 @@ def run_product(input: RunInput, ctx: Ctx, product_id: str) -> ProductResult:
     return ProductResult(
         productId=product_id, name=p.name, lines=lines, rawMaterial=raw_material, dna=dna, marketing=marketing,
         unitCost=unit_cost, refPrice=ref_price, refCost=ref_cost, p2o5ValueRef=p2o5_value_ref,
+        yieldGainTHa=yield_t_ha if agro_data else None,
         addedValue=added_value, carbonSavingPerT=carbon_saving_per_t, carbonEffect=carbon_effect,
         prices=prices, anchorPrice=anchor_price, floor=floor, ceiling=ceiling,
         cgm=cgm, cgmRef=cgm_ref,
         cgmP2O5=cgm_p2o5,
         cgmS=cgm_s,
+        cgmRefP2O5=cgm_ref_p2o5,
+        deltaVsRef=cgm - cgm_ref if cgm is not None and cgm_ref is not None else None,
+        costVsRef=unit_cost - ref_cost if ref_cost is not None else None,
+        sulphurShare=sulphur_usd / unit_cost if unit_cost else None,
         volume=volume, totalMargin=cgm * volume if cgm is not None else None,
         methods=methods, waterfall=waterfall, ramp=ramp,
         carbonScenarios=carbon_scenarios,
@@ -195,8 +204,15 @@ def _argus(uploads: list[UploadRecord]) -> UploadRecord | None:
     return _latest([u for u in uploads if u.type == 'prices' and re.search('argus', u.name, re.I)])
 
 
-def freshness_flags(uploads: list[UploadRecord], params: Parameters, period: Span) -> list[Flag]:
-    """D1: prices and freight are too far apart. D2: nothing has been uploaded for a while."""
+def real_today() -> date:
+    """The calendar date, as the uploads are stamped with. The tests pin it."""
+    return date.today()
+
+
+def freshness_flags(uploads: list[UploadRecord], params: Parameters, period: Span, today: date | None = None) -> list[Flag]:
+    """D1: prices and freight are too far apart. D2: nothing has been uploaded for a while.
+
+    Uploads are stamped with the real date, so their age is counted to the real date too (`today`, for the tests)."""
     flags: list[Flag] = []
     prices = _argus(uploads) or _latest([u for u in uploads if u.type == 'prices'])
     freight = _latest([u for u in uploads if u.type == 'freight'])
@@ -211,10 +227,24 @@ def freshness_flags(uploads: list[UploadRecord], params: Parameters, period: Spa
                 action=FlagAction(label='Open Uploads', kind='open-uploads'),
             ))
     latest_upload = _latest(uploads, key=lambda u: u.uploadedAt)
-    if latest_upload and (TODAY - latest_upload.uploadedAt).days > params.staleDays:
+    if latest_upload and ((today or real_today()) - latest_upload.uploadedAt).days > params.staleDays:
         flags.append(Flag(id='D2', code='D2', severity='info', title=f'Latest upload is older than {params.staleDays} days',
                           action=FlagAction(label='Open Uploads', kind='open-uploads')))
     return flags
+
+
+def months_behind_freight(uploads: list[UploadRecord], params: Parameters) -> dict[str, int]:
+    """Argus price files too far behind the latest freight file: upload id → months behind."""
+    freight = _latest([u for u in uploads if u.type == 'freight'])
+    if not freight:
+        return {}
+    out: dict[str, int] = {}
+    for u in uploads:
+        if u.type == 'prices' and re.search('argus', u.name, re.I) and u.dataThrough < freight.dataThrough:
+            gap = months_between(u.dataThrough, freight.dataThrough)
+            if gap >= params.freshnessMonths:
+                out[u.id] = math.floor(gap + 0.5)
+    return out
 
 
 def compute_flags(input: RunInput, ctx: Ctx, per_product: dict[str, ProductResult]) -> list[Flag]:
@@ -235,7 +265,11 @@ def compute_flags(input: RunInput, ctx: Ctx, per_product: dict[str, ProductResul
         else:
             flags.append(Flag(id='S1', code='S1', severity='warning', title='TSP full production cost differs between sources',
                               detail=f'Business-case deck {DECK_TSP_COST} USD/t vs Standard cost 2026 {_f2(lead.refCost or 0)} USD/t.',
-                              action=FlagAction(label='Answer', kind='answer')))
+                              action=FlagAction(label='Answer', kind='answer'),
+                              options=[
+                                  FlagOption(id='standard', label=f'Use {_f2(lead.refCost or 0)}', sub='Standard cost 2026', primary=True),
+                                  FlagOption(id='deck', label=f'Use {DECK_TSP_COST}', sub='Business-case deck', refCostOverride=DECK_TSP_COST),
+                              ]))
 
     below = next((x for x in per_product.values() if x.anchorPrice is not None and x.anchorPrice < x.floor), None)
     if below:
@@ -247,14 +281,15 @@ def compute_flags(input: RunInput, ctx: Ctx, per_product: dict[str, ProductResul
         ))
 
     flags += freshness_flags(ctx.uploads, ctx.params, Span(input.periodFrom, input.periodTo))
-    argus = _argus(ctx.uploads)
 
-    if prod.family == 'phosfusion' and prod.yieldGain is not None and 'value' in input.methods:
+    # U1: the product's yield gain was stored without a unit (the workbook labels it “%” and uses it as t/ha).
+    # The engine never guesses: the run says which unit it used, and the flag stays until the unit is stored or confirmed.
+    if prod.yieldGain is not None and prod.yieldGainUnit is None and 'value' in input.methods:
         done = bool(r.get('U1'))
         flags.append(Flag(
             id='U1', code='U1', severity='resolved' if done else 'warning',
-            title='Yield gain confirmed as t/ha' if done else 'Yield impact labelled “%” but used as t/ha',
-            detail=None if done else f'The workbook labels the input “%” but divides {_num(input.yieldGain)} by the application rate (t/ha). Confirm the unit.',
+            title=f'Yield gain confirmed as {input.yieldGainUnit}' if done else f'Yield gain has no stored unit — {_num(input.yieldGain)} is used as {input.yieldGainUnit}',
+            detail=None if done else 'The workbook labels this input “%” but uses it as t/ha. Set the unit on the product, or confirm it for this run.',
             action=FlagAction(label='Confirm unit', kind='open-input', target='yieldGain'),
         ))
 
@@ -278,8 +313,13 @@ def compute_flags(input: RunInput, ctx: Ctx, per_product: dict[str, ProductResul
         detail='Used for volume and total margin.',
         action=FlagAction(label='Edit', kind='open-input', target='marketShare'),
     ))
-    if argus and snap.id == 'today' and input.referenceId == 'TSP' and input.priceType == 'high':
-        flags.append(Flag(id='Q1', code='Q1', severity='info', title='TSP FOB quote: low 710 > high 691 — check the Argus file'))
+    # The reference quote itself: a low above its high is a slip in the price file, and a missing high is replaced by the low.
+    quote = snap.refPrices.get(input.referenceId)
+    if quote and quote.low is not None and quote.high is not None and quote.low > quote.high:
+        flags.append(Flag(id='Q1', code='Q1', severity='warning', title=f'{input.referenceId} FOB quote: low {_num(quote.low)} > high {_num(quote.high)} — check the price file',
+                          action=FlagAction(label='Open Uploads', kind='open-uploads')))
+    elif quote and input.priceType == 'high' and quote.high is None and quote.low is not None:
+        flags.append(Flag(id='Q2', code='Q2', severity='info', title=f'No high {input.referenceId} quote for {snap.label} — the low quote ({_num(quote.low)}) is used'))
 
     order = {'error': 0, 'warning': 1, 'info': 2, 'resolved': 3}
     return sorted(flags, key=lambda f: order[f.severity])

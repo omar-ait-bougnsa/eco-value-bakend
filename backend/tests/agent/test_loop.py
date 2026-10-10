@@ -70,8 +70,11 @@ def test_agent_turn_mock_openrouter_execution(store):
     event_types = [e.type for e in events]
     assert 'step' in event_types
     assert 'tool' in event_types
-    assert 'result' in event_types
     assert 'text' in event_types
+    # The model priced a preview: nothing is saved until the user confirms.
+    assert 'result' not in event_types and not sim.runs
+    q = next(e for e in events if e.type == 'question').payload
+    assert [o['id'] for o in q['options']] == ['save', 'discard'] and q['resume']['productIds'] == ['phos-65-35']
 
 
 def test_agent_turn_mock_openrouter_run_engine(store):
@@ -114,9 +117,17 @@ def test_agent_turn_mock_openrouter_run_engine(store):
 
     event_types = [e.type for e in events]
     assert 'tool' in event_types
-    assert 'result' in event_types
+    assert 'question' in event_types and not sim.runs
     assert any(e.type == 'tool' and e.payload['name'] == 'run_engine' for e in events)
     assert 'done' in event_types
+
+    # The user's click saves it, through the built-in agent: the model does not write.
+    from app.agent.fallback import run_scripted_turn
+    q = next(e for e in events if e.type == 'question').payload
+    saved = _run(_collect(run_scripted_turn(store, sim.id, 'Save', answer={'option': 'save', 'resume': q['resume'], 'summary': q['summary']})))
+    assert 'result' in [e.type for e in saved] and [r.version for r in sim.runs] == [1]
+    kept = _run(_collect(run_scripted_turn(store, sim.id, 'No', answer={'option': 'discard', 'resume': q['resume']})))
+    assert [e.type for e in kept] == ['text', 'done'] and len(sim.runs) == 1
 
     text_e = next(e for e in events if e.type == 'text')
     assert '313.91 USD/t' in text_e.payload['content']

@@ -48,6 +48,10 @@ class ProductRow(Base):
     pcfPlaceholder: Mapped[Optional[bool]] = mapped_column('pcf_placeholder')
     appRate: Mapped[Optional[float]] = mapped_column('app_rate')
     yieldGain: Mapped[Optional[float]] = mapped_column('yield_gain')
+    yieldGainUnit: Mapped[Optional[str]] = mapped_column('yield_gain_unit')
+    baselineYield: Mapped[Optional[float]] = mapped_column('baseline_yield')
+    status: Mapped[Optional[str]]  # active (or null, on older rows) | quarantined
+    issues: Mapped[Optional[list]] = mapped_column(Json)
 
 
 class SnapshotRow(Base):
@@ -71,6 +75,41 @@ class UploadRow(Base):
     fileDate: Mapped[date] = mapped_column('file_date')
     dataThrough: Mapped[date] = mapped_column('data_through')
     detail: Mapped[Optional[str]]
+    sizeBytes: Mapped[Optional[int]] = mapped_column('size_bytes')
+    contentHash: Mapped[Optional[str]] = mapped_column('content_hash', index=True)
+    status: Mapped[Optional[str]]
+    issues: Mapped[Optional[list]] = mapped_column(Json)
+
+
+class JobRow(Base):
+    """One turn of the agent on a simulation: a chat message, a run of the Configure run form, an answer to a question.
+    Its state is what the UI shows; nothing is inferred from the absence of a run."""
+    __tablename__ = 'agent_jobs'
+    id: Mapped[str] = mapped_column(primary_key=True)  # also the correlation id in the logs
+    simulationId: Mapped[str] = mapped_column('simulation_id', ForeignKey('simulations.id', ondelete='CASCADE'), index=True)
+    kind: Mapped[str]  # message | run | answer
+    state: Mapped[str] = mapped_column(index=True)  # queued | running | completed | failed | cancelled | timed_out
+    mode: Mapped[Optional[str]]  # llm | script, once known
+    request: Mapped[dict] = mapped_column(Json)  # what was asked, to retry it
+    result: Mapped[Optional[dict]] = mapped_column(Json)
+    failureCode: Mapped[Optional[str]] = mapped_column('failure_code')
+    error: Mapped[Optional[str]]  # safe to show: never a stack trace or a secret
+    transitions: Mapped[list] = mapped_column(Json)  # [{state, at}], in order
+    createdAt: Mapped[datetime] = mapped_column('created_at', DateTime(timezone=True), index=True)
+    startedAt: Mapped[Optional[datetime]] = mapped_column('started_at', DateTime(timezone=True))
+    finishedAt: Mapped[Optional[datetime]] = mapped_column('finished_at', DateTime(timezone=True))
+
+
+class AuditRow(Base):
+    """What was done to the stored records outside a normal edit: quarantines, restores, rejected duplicates."""
+    __tablename__ = 'audit_log'
+    id: Mapped[str] = mapped_column(primary_key=True)
+    at: Mapped[datetime] = mapped_column(DateTime(timezone=True), index=True)
+    actor: Mapped[str]
+    action: Mapped[str]
+    entity: Mapped[str]
+    entityId: Mapped[str] = mapped_column('entity_id', index=True)
+    detail: Mapped[dict] = mapped_column(Json)
 
 
 class ParametersRow(Base):

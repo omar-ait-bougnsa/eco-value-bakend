@@ -1,3 +1,5 @@
+import logging
+import os
 from contextlib import asynccontextmanager
 
 from fastapi import FastAPI
@@ -5,10 +7,29 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse, RedirectResponse
 
+from . import settings  # noqa: F401  (reads .env before anything looks at the environment)
 from . import db, rag
 from .routers import agent, engine, market, parameters, products, simulations, uploads
 from .routers import rag as knowledge
+from .db import AuditRow
+from .limits import FieldError, Limits, get_limits
 from .store import Store, StoreDep, init_db
+
+
+# The app's own logs: job transitions and model calls, each with the job id. Uvicorn only sets up its own loggers.
+_log = logging.getLogger('evs')
+if not _log.handlers:
+    class _JobId(logging.Filter):
+        def filter(self, record: logging.LogRecord) -> bool:
+            from .agent.jobs import current_job
+            record.job = current_job.get()
+            return True
+
+    _handler = logging.StreamHandler()
+    _handler.addFilter(_JobId())
+    _handler.setFormatter(logging.Formatter('%(asctime)s %(levelname)s %(name)s [%(job)s] %(message)s'))
+    _log.addHandler(_handler)
+    _log.setLevel(os.getenv('LOG_LEVEL', 'INFO').upper())
 
 
 @asynccontextmanager
@@ -40,10 +61,24 @@ app.add_middleware(
 )
 
 
+def problems(errors: list[tuple[str, str]]) -> JSONResponse:
+    """Rejected input: 400 with one entry per field. `detail` is the same in one line, for a message box."""
+    return JSONResponse({'detail': '; '.join(f'{f}: {m}' if f else m for f, m in errors), 'errors': [{'field': f, 'message': m} for f, m in errors]}, status_code=400)
+
+
+def as_problems(exc: RequestValidationError) -> list[tuple[str, str]]:
+    # The default handler echoes the rejected value back, which fails on NaN / Infinity (not valid JSON).
+    return [('.'.join(str(x) for x in e['loc'] if x not in ('body', 'query', 'input')), e['msg'].removeprefix('Value error, ')) for e in exc.errors()]
+
+
 @app.exception_handler(RequestValidationError)
 def invalid_request(request, exc: RequestValidationError):
-    # The default handler echoes the rejected value back, which fails on NaN / Infinity (not valid JSON).
-    return JSONResponse({'detail': [{'type': e['type'], 'loc': list(e['loc']), 'msg': e['msg']} for e in exc.errors()]}, status_code=422)
+    return problems(as_problems(exc))
+
+
+@app.exception_handler(FieldError)
+def out_of_bounds(request, exc: FieldError):
+    return problems(exc.errors)
 
 
 for r in (products, market, parameters, uploads, engine, simulations, agent, knowledge):
@@ -55,6 +90,18 @@ for r in (products, market, parameters, uploads, engine, simulations, agent, kno
 def reset(store: Store = StoreDep):
     store.reset()
     rag.prepare(store.db)
+
+
+@app.get('/api/limits', response_model=Limits, tags=['System'], summary='Business limits of the inputs: what the API accepts, for the forms to show')
+def limits():
+    return get_limits()
+
+
+@app.get('/api/audit', tags=['System'], summary='Quarantines, restores and duplicate uploads, newest first')
+def audit(store: Store = StoreDep, limit: int = 100):
+    from sqlalchemy import select
+    rows = store.db.scalars(select(AuditRow).order_by(AuditRow.at.desc()).limit(limit))
+    return [{'id': r.id, 'at': r.at, 'actor': r.actor, 'action': r.action, 'entity': r.entity, 'entityId': r.entityId, 'detail': r.detail} for r in rows]
 
 
 @app.get('/api/health', tags=['System'])

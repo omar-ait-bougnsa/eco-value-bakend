@@ -1,5 +1,8 @@
-from fastapi import APIRouter
-from pydantic import BaseModel, Field
+from fastapi import APIRouter, Body
+from fastapi.exceptions import RequestValidationError
+from pydantic import BaseModel, Field, ValidationError
+
+from ..limits import FieldError
 
 from ..engine import (
     Composition,
@@ -11,7 +14,7 @@ from ..engine import (
     run_sulphur_sensitivity,
 )
 from ..engine.run import diff_inputs
-from ..schemas import DiffRequest, EngineResult, InputChange, RunInputPatch
+from ..schemas import DiffRequest, EngineResult, InputChange, RunInputPatch, Validation
 from ..store import Store, StoreDep
 
 router = APIRouter(prefix='/engine', tags=['Engine'])
@@ -36,14 +39,28 @@ def run(body: RunInputPatch, store: Store = StoreDep):  # type: ignore[valid-typ
     return EngineResult(input=input, output=store.run(input))
 
 
+@router.post('/validate', response_model=Validation, summary='What running this input would reject, field by field. Nothing is run')
+def validate(body: dict = Body(...), store: Store = StoreDep):
+    try:
+        store.make_input(RunInputPatch.model_validate(body).model_dump(exclude_unset=True))
+    except ValidationError as e:
+        return {'errors': [{'field': '.'.join(str(x) for x in err['loc']), 'message': err['msg']} for err in e.errors(include_context=False)]}
+    except RequestValidationError as e:
+        return {'errors': [{'field': '.'.join(str(x) for x in err['loc'] if x not in ('body', 'input')), 'message': err['msg'].removeprefix('Value error, ')} for err in e.errors()]}
+    except FieldError as e:
+        return {'errors': [{'field': f, 'message': m} for f, m in e.errors]}
+    return {'errors': []}
+
+
 @router.post('/diff', response_model=list[InputChange], summary='Inputs that differ between two runs (comment and resolved flags are ignored)')
 def diff(body: DiffRequest):
     return diff_inputs(body.before, body.after)
 
 
-@router.post('/sensitivity', response_model=SensitivityResult, summary='Sulphur price parameter sweep and analytical break-evens')
-def sensitivity(body: SensitivityRequest = SensitivityRequest(), store: Store = StoreDep):
-    """Run a parameter sweep over the sulphur price and return analytical zero-margin and crossover break-evens."""
+def sulphur_sweep(store: Store, product_id: str, reference_id: str, from_price: float = 100.0, to_price: float = 1000.0, step: float = 50.0) -> SensitivityResult:
+    """Margins of a product and its reference over a range of sulphur prices, with today's other prices and the
+    workspace parameters. The product is held at its reference-minus anchor."""
+    body = SensitivityRequest(productId=product_id, referenceId=reference_id, fromPrice=from_price, toPrice=to_price, step=step)
     p_row = store.product(body.productId)
     ref_row = store.product(body.referenceId)
     snap = store.snapshots()[0]  # 'today' snapshot
@@ -103,3 +120,8 @@ def sensitivity(body: SensitivityRequest = SensitivityRequest(), store: Store = 
         step=body.step,
     )
 
+
+@router.post('/sensitivity', response_model=SensitivityResult, summary='Sulphur price parameter sweep and analytical break-evens')
+def sensitivity(body: SensitivityRequest = SensitivityRequest(), store: Store = StoreDep):
+    """Run a parameter sweep over the sulphur price and return analytical zero-margin and crossover break-evens."""
+    return sulphur_sweep(store, body.productId, body.referenceId, body.fromPrice, body.toPrice, body.step)

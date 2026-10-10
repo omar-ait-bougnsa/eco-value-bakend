@@ -76,7 +76,7 @@ def add_document(
     except rag.UnsupportedFile as e:
         raise HTTPException(415, str(e))
     except rag.UnreadableFile as e:
-        raise HTTPException(422, str(e))
+        raise HTTPException(400, str(e))
     if doc.id in known:
         response.status_code = 200
     if doc.status != 'ready':

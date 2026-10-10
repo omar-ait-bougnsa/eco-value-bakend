@@ -12,10 +12,11 @@ from sqlalchemy import delete, func, select
 from sqlalchemy.exc import DBAPIError, IntegrityError
 from sqlalchemy.orm import Session
 
-from . import db
+from . import db, migrations
 from .data import seed
-from .db import DocumentChunkRow, DocumentRow, ParametersRow, ProductRow, RunRow, SimulationRow, SnapshotRow, UploadRow
-from .engine.period import YTD
+from .db import AuditRow, JobRow, DocumentChunkRow, DocumentRow, ParametersRow, ProductRow, RunRow, SimulationRow, SnapshotRow, UploadRow
+from .engine.period import CURRENT_YEAR, YTD
+from .limits import FieldError, product_errors, run_input_errors
 from .engine.run import Ctx, diff_inputs, run_engine
 from .schemas import Parameters, Product, Run, RunInput, RunOutput, Snapshot, UploadRecord
 
@@ -55,6 +56,19 @@ class Store:
             raise HTTPException(404, f'Product {id!r} not found')
         return Product.model_validate(row)
 
+    def check_product(self, product: Product, creating: bool = False) -> None:
+        """The business bounds, and a name no other product has (whatever the case). Raises FieldError."""
+        errors = product_errors(product.model_dump())
+        same_name = select(ProductRow).where(func.lower(ProductRow.name) == product.name.lower())
+        clash = self.db.scalars(same_name if creating else same_name.where(ProductRow.id != product.id)).first()
+        if clash is not None:
+            errors.append(('name', f'is already the name of another product ({clash.id})'))
+        if errors:
+            raise FieldError(errors)
+
+    def audit(self, action: str, entity: str, entity_id: str, detail: dict, actor: str = 'system') -> None:
+        self.db.add(AuditRow(id=uid('a'), at=now(), actor=actor, action=action, entity=entity, entityId=entity_id, detail=detail))
+
     def has_product(self, id: str) -> bool:
         return self.db.get(ProductRow, id) is not None
 
@@ -75,12 +89,18 @@ class Store:
     def snapshots(self) -> list[Snapshot]:
         return [Snapshot.model_validate(r) for r in self.db.scalars(select(SnapshotRow).order_by(SnapshotRow.position))]
 
-    def uploads(self) -> list[UploadRecord]:
-        """Newest first."""
-        return [UploadRecord.model_validate(r) for r in self.db.scalars(select(UploadRow).order_by(UploadRow.createdAt.desc()))]
+    def uploads(self, quarantined: bool = False) -> list[UploadRecord]:
+        """Newest first. Quarantined records are kept but read by nothing, unless asked for."""
+        rows = self.db.scalars(select(UploadRow).order_by(UploadRow.createdAt.desc()))
+        return [UploadRecord.model_validate(r) for r in rows if quarantined or r.status != 'quarantined']
+
+    def upload_with_hash(self, content_hash: str) -> UploadRecord | None:
+        rows = self.db.scalars(select(UploadRow).where(UploadRow.contentHash == content_hash))
+        row = next((r for r in rows if r.status != 'quarantined'), None)
+        return UploadRecord.model_validate(row) if row is not None else None
 
     def add_upload(self, upload: UploadRecord) -> UploadRecord:
-        self.db.add(UploadRow(createdAt=now(), **upload.model_dump()))
+        self.db.add(UploadRow(createdAt=now(), **upload.model_dump(exclude={'duplicate'})))
         self.db.commit()
         return upload
 
@@ -154,7 +174,8 @@ class Store:
             methods=['costPlus', 'market', 'value', 'refMinus'],
             costPlusMargin=p.costPlusMargin, marketingPct=p.marketingPct, fullCost=p.fullCost, dnaPerTon=p.dnaPerTon,
             valueShare=p.valueShare, priceType=p.priceType, cropPrice=seed.TARGET_CROP_PRICE,
-            yieldGain=pick(lead, 'yieldGain', 0.12), appRateNew=pick(lead, 'appRate', 0.162), pcfNew=pick(lead, 'pcf', 0.5),
+            yieldGain=pick(lead, 'yieldGain', 0.12), yieldGainUnit=pick(lead, 'yieldGainUnit', 't/ha'), baselineYield=getattr(lead, 'baselineYield', None),
+            appRateNew=pick(lead, 'appRate', 0.162), pcfNew=pick(lead, 'pcf', 0.5),
             appRateRef=pick(ref, 'appRate', 0.13), pcfRef=pick(ref, 'pcf', 0.7),
             carbonMarket=p.carbonMarket, carbonPrice=0, marketShare=p.marketShare, rampTargetYear=p.rampTargetYear,
             addressable=seed.ADDRESSABLE_MARKET_T, benchmark=None, anchor='refMinus', refCostOverride=None,
@@ -174,9 +195,16 @@ class Store:
             input = RunInput.model_validate(merged)
         except ValidationError as e:
             raise RequestValidationError([{**err, 'loc': ('body', 'input', *err['loc'])} for err in e.errors(include_context=False)])
-        missing = [i for i in input.productIds if not self.has_product(i)]
+        rows = {i: self.db.get(ProductRow, i) for i in dict.fromkeys([*input.productIds, input.referenceId])}
+        missing = [i for i, r in rows.items() if r is None]
         if missing:
-            raise HTTPException(422, f'Unknown product id(s): {", ".join(missing)}')
+            raise FieldError([('productIds', f'unknown product id(s): {", ".join(missing)}')])
+        held = [i for i, r in rows.items() if r.status == 'quarantined']
+        if held:
+            raise FieldError([('productIds', f'{", ".join(held)} is quarantined and cannot be priced until it is corrected')])
+        errors = run_input_errors(input.model_dump(), min(CURRENT_YEAR, input.periodFrom.year))
+        if errors:
+            raise FieldError(errors)
         return input
 
     def run(self, input: RunInput, ctx: Ctx | None = None) -> RunOutput:
@@ -184,7 +212,7 @@ class Store:
         try:
             return run_engine(input, ctx or self.ctx())
         except (ValidationError, OverflowError):
-            raise HTTPException(422, 'These inputs produce a result that is not a finite number')
+            raise HTTPException(400, 'These inputs produce a result that is not a finite number')
 
     def add_run(self, sim: SimulationRow, input: RunInput, by: str, summary: str, commit: bool = True) -> Run:
         """Run the engine and append the result as the simulation's next version."""
@@ -211,7 +239,7 @@ class Store:
         self.db.add_all(ProductRow(position=i, **p.model_dump()) for i, p in enumerate(seed.products()))
         self.db.add_all(SnapshotRow(position=i, **s.model_dump()) for i, s in enumerate(seed.SNAPSHOTS))
         loaded = datetime(seed.TODAY.year, seed.TODAY.month, seed.TODAY.day, tzinfo=timezone.utc)
-        self.db.add_all(UploadRow(createdAt=loaded - timedelta(seconds=i), **u.model_dump()) for i, u in enumerate(seed.uploads()))
+        self.db.add_all(UploadRow(createdAt=loaded - timedelta(seconds=i), **u.model_dump(exclude={'duplicate'})) for i, u in enumerate(seed.uploads()))
         self.db.add(ParametersRow(id=1, **seed.default_params().model_dump()))
         self.db.flush()
         for id, title, created, over in (
@@ -225,7 +253,7 @@ class Store:
 
     def reset(self) -> None:
         """Drop every row and load the demo data again. The knowledge base is left empty: `rag.prepare` loads its documents."""
-        for table in (DocumentChunkRow, DocumentRow, RunRow, SimulationRow, UploadRow, ProductRow, SnapshotRow, ParametersRow):
+        for table in (JobRow, DocumentChunkRow, DocumentRow, RunRow, SimulationRow, UploadRow, ProductRow, SnapshotRow, ParametersRow, AuditRow):
             self.db.execute(delete(table))
         self.db.expunge_all()
         self.seed()
@@ -234,6 +262,7 @@ class Store:
 def init_db() -> None:
     """Create missing tables and load the demo data into an empty database."""
     try:
+        migrations.upgrade(db.engine)  # columns added since the tables were made
         db.Base.metadata.create_all(db.engine)
     except DBAPIError as e:
         if 'vector' in str(e.orig):
