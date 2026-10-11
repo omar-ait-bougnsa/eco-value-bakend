@@ -34,9 +34,8 @@ export function UploadReviewSheet() {
     // The file itself is sent: the server reads it again and makes the record from it. Nothing typed here is trusted.
     try { saved = await add(picked) } catch (e) { report(e); return }
     if (saved.duplicate) { close(); toast('Already uploaded', { description: `${saved.name} is this same file. Nothing was added.` }); return }
-    // The file also goes to the knowledge base, so the agent can cite it. The data is in use either way.
-    api.indexDocument(picked, saved.id).catch(report)
-    close(); toast('Data added', { description: found.resolves ? 'The prices/freight discrepancy flag is resolved.' : found.name })
+    // The server put the file in the knowledge base in the same step: the assistant can answer from it.
+    close(); toast(saved.type === 'other' ? 'Document added' : 'Data added', { description: found.resolves ? 'The prices/freight discrepancy flag is resolved.' : saved.type === 'other' ? `${saved.name} can now be asked about in the chat. It is used in no calculation.` : found.name })
   }
   return (
     <Sheet open={open} onOpenChange={(o) => !o && close()}>
@@ -46,8 +45,8 @@ export function UploadReviewSheet() {
         <div className="min-h-0 flex-1 space-y-4 overflow-y-auto p-5">
           {stage === 'pick' && (
             <div className="space-y-3">
-              <button onClick={() => input.current?.click()} className="flex w-full flex-col items-center gap-2 rounded-xl border border-dashed p-8 text-center hover:bg-accent"><Upload className="size-5" /><span className="text-sm font-medium">Choose a file</span><span className="text-[13px] text-muted-foreground">.xlsx or .csv · Prices, freight, agro tests, crop prices</span></button>
-              <input ref={input} type="file" accept=".xlsx,.csv" hidden onChange={(e) => { const f = e.target.files?.[0]; if (f) void start(f) }} />
+              <button onClick={() => input.current?.click()} className="flex w-full flex-col items-center gap-2 rounded-xl border border-dashed p-8 text-center hover:bg-accent"><Upload className="size-5" /><span className="text-sm font-medium">Choose a file</span><span className="text-[13px] text-muted-foreground">.xlsx, .csv, .pdf, .docx, .txt or .md · data files and documents</span></button>
+              <input ref={input} type="file" accept=".xlsx,.csv,.pdf,.docx,.txt,.md" hidden onChange={(e) => { const f = e.target.files?.[0]; if (f) void start(f) }} />
             </div>
           )}
           {stage === 'reading' && <p className="text-sm text-muted-foreground">Reading “{reading}”…</p>}
@@ -57,7 +56,7 @@ export function UploadReviewSheet() {
               {stage === 'found' && (
                 <>
                   <div className="overflow-hidden rounded-[10px] border text-sm">
-                    {([['Detected type', found.typeLabel, false], ['File date', dayLong(found.fileDate), true], ['Data through', `${dayLong(found.dataThrough)} (last row)`, true], ['Series', found.series, false]] as const).map(([k, v, mono]) => (
+                    {([['Detected type', found.typeLabel, false], ['File date', dayLong(found.fileDate), true], ['Data through', found.type === 'other' ? dayLong(found.dataThrough) : `${dayLong(found.dataThrough)} (last row)`, true], ['Series', found.series, false]] as const).map(([k, v, mono]) => (
                       <div key={k} className="flex gap-3 border-b px-3.5 py-2.5"><span className="w-[110px] shrink-0 text-muted-foreground">{k}</span><span className={`font-medium ${mono ? 'num' : ''}`}>{v}</span></div>))}
                     <div className="flex gap-3 px-3.5 py-2.5"><span className="w-[110px] shrink-0 text-muted-foreground">Affects</span><span className="flex flex-wrap gap-1.5">{found.affects.map((a) => <SourceChip key={a}>{a}</SourceChip>)}</span></div>
                   </div>

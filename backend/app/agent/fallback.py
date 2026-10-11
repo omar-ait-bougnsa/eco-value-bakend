@@ -25,6 +25,7 @@ from .types import AgentEvent
 
 PRICING = re.compile(r'price|prix|calcul|run|simulate|compar')
 WHAT_IF = re.compile(r'what if|set|change|use|make|try|update|if')
+ABOUT = re.compile(r'\b(info|information|details?|about|describe|show|composition|recipe|what is|tell me)\b')
 KNOWLEDGE = re.compile(r'\b(sources?|reports?|documents?|stud(y|ies)|according to|cite|citations?|knowledge|rapports?|selon)\b')
 
 
@@ -54,7 +55,7 @@ def _day(d: date, year: bool = True) -> str:
 
 # ───────────────────────── what the text names ─────────────────────────
 
-def parse_products(store: Store, t: str) -> list[str]:
+def parse_products(store: Store, t: str, default: bool = True) -> list[str]:
     """The Phosfusion grades named by their ratio (`65-35`, `65 35`), in the order they are named.
     `phosfusion` alone means the product a run starts from."""
     found: list[tuple[int, str]] = []
@@ -68,7 +69,7 @@ def parse_products(store: Store, t: str) -> list[str]:
         if at:
             found.append((at.start(), p.id))
     ids = [i for _, i in sorted(found)]
-    if not ids and 'phos' in t:
+    if default and not ids and 'phos' in t:
         ids = store.default_input()['productIds'][:1]
     return ids
 
@@ -80,7 +81,8 @@ def parse_reference(store: Store, t: str) -> Optional[str]:
 def find_products(store: Store, t: str) -> list[str]:
     """Products the text names: by id or full name, or a Phosfusion grade by its ratio."""
     named = [p.id for p in store.products() if re.search(rf'(?<![\w-]){re.escape(p.id.lower())}(?![\w-])', t) or p.name.lower() in t]
-    return list(dict.fromkeys([*named, *(parse_products(store, t) if re.search(r'\d', t) else [])]))
+    # A grade by its ratio only when that ratio is one of the library's: "phosfusion 80-20" is not Phosfusion 65-35.
+    return list(dict.fromkeys([*named, *parse_products(store, t, default=False)]))
 
 
 def product_card(store: Store, product_id: str) -> str:
@@ -415,12 +417,16 @@ def _turn(store: Store, sim, user_text: str, input: Optional[dict[str, Any]], an
     described = [] if pricing else find_products(store, t)
     if about_run:
         yield from about_run
-    elif described and re.search(r'\b(info|information|details?|about|describe|show|composition|recipe|what is|tell me)\b', t):
-        yield _text('\n\n'.join(product_card(store, i) for i in described[:3]))
-    elif re.search(r'sensitiv|sensibilit|break[- ]?even|seuil', t):
-        yield from _sensitivity(store, last)
     elif KNOWLEDGE.search(t):
         yield from _knowledge(store, user_text)
+    elif described and ABOUT.search(t):
+        yield _text('\n\n'.join(product_card(store, i) for i in described[:3]))
+    elif ABOUT.search(t) and re.search(r'\bproduct\b|phos', t) and not pricing:
+        # A product the library does not have. An uploaded file may describe it: the documents are searched for it.
+        yield _text('That product is not in the product library, so it cannot be priced yet. This is what the uploaded documents say about it.')
+        yield from _knowledge(store, user_text)
+    elif re.search(r'sensitiv|sensibilit|break[- ]?even|seuil', t):
+        yield from _sensitivity(store, last)
     elif re.search(r'changed|new|latest', t) and 'upload' in t:
         yield from _latest_uploads(store)
     elif re.search(r'gap|check|données|inconsisten|fresh|stale|upload', t):

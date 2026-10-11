@@ -1,0 +1,16 @@
+fastapi>=0.115
+uvicorn[standard]>=0.30
+pydantic>=2.7
+python-multipart>=0.0.9
+sqlalchemy>=2.0
+psycopg[binary]>=3.2
+httpx>=0.27
+
+# knowledge base (RAG.md)
+pgvector>=0.3.0
+pypdf>=4.0
+openpyxl>=3.1
+# fastembed>=0.4   optional: local all-MiniLM-L6-v2 embeddings when there is no API key (EMBEDDINGS=local)
+
+# tests
+pytest>=8

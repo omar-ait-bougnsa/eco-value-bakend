@@ -129,7 +129,10 @@ flag U1 until the unit is set on the product or confirmed for the run.
 ## Uploads
 
 `POST /api/uploads` takes the file itself. The record (name, type, dates, SHA-256) is made from it; a file that is empty,
-too large, not `.xlsx`/`.csv` or not readable as what its extension says is refused. The same bytes sent again return the
+too large, not `.xlsx`, `.csv`, `.pdf`, `.docx`, `.txt` or `.md`, or not readable as what its extension says is refused.
+A file with rows of prices, freight, trials or crop prices gets that type; anything else is `other`: a document, used in
+no calculation. In the same step the file is put in the knowledge base (`documentId` in the response), so the assistant
+can answer from it. It does not create a product: the product library is only changed through `/api/products`. The same bytes sent again return the
 upload they already are (200, `duplicate: true`) instead of a second row.
 
 ## Reviewing stored records

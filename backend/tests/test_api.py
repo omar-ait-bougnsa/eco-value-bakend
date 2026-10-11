@@ -133,7 +133,7 @@ def test_newer_prices_resolve_the_freshness_flag():
     assert saved.json()['name'] == 'argus-fob-morocco-30-09-2026.xlsx' and saved.json()['uploadedAt'] == date.today().isoformat()
     fresh = client.get('/api/uploads/freshness').json()
     assert fresh['d1'] is None and fresh['latest']['id'] == saved.json()['id']
-    assert client.post('/api/uploads/detect', files={'file': ('notes.txt', b'x')}).json()['problems'] == ['only .xlsx and .csv files are accepted']
+    assert client.post('/api/uploads/detect', files={'file': ('photo.png', b'x')}).json()['problems'] == ['only .xlsx, .csv, .pdf, .docx, .txt, .md files are accepted']
 
 
 def test_resolve_snapshot_and_presets():

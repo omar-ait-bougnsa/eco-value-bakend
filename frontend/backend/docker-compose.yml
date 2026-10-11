@@ -1,0 +1,56 @@
+# Local development stack: PostgreSQL + the API.
+#   docker compose up --build      → http://localhost:8000/docs
+
+# Explicit project name: the default (the folder name, "backend") is shared with other projects,
+# and Compose would then reuse their containers and volumes.
+name: ecoapp
+
+services:
+  db:
+    # PostgreSQL 17 with the pgvector extension, for the knowledge base. The -trixie build is on the same Debian as
+    # postgres:17, so a data volume created with that image keeps working.
+    image: pgvector/pgvector:pg17-trixie
+    environment:
+      POSTGRES_USER: eco
+      POSTGRES_PASSWORD: eco # local development only
+      POSTGRES_DB: eco
+    ports:
+      - "127.0.0.1:${DB_PORT:-5434}:5432" # 5434 on the host: 5432 and 5433 are used by other PostgreSQL instances here
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U eco -d eco"]
+      interval: 2s
+      timeout: 3s
+      retries: 30
+
+  api:
+    build: .
+    # The settings (model key, model, limits) are in the repository's .env, next to this folder: Compose only reads
+    # backend/.env by itself, so without this line the key never reached the container.
+    env_file:
+      - path: ../.env
+        required: false
+    environment:
+      DATABASE_URL: postgresql+psycopg://eco:eco@db:5432/eco
+      # The model key and model, LLM_ENABLED, the embeddings and EVS_LIMITS come from ../.env (env_file above).
+      # They are not repeated here: a value set here, even empty, would replace the one in the file.
+    ports:
+      - "127.0.0.1:${API_PORT:-8000}:8000" # this machine only: the API has no authentication yet
+    depends_on:
+      db:
+        condition: service_healthy
+
+  # Database browser: http://localhost:8081  (System: PostgreSQL · Server: db · User / Password / Database: eco)
+  adminer:
+    image: adminer:5
+    environment:
+      ADMINER_DEFAULT_SERVER: db
+    ports:
+      - "127.0.0.1:${ADMINER_PORT:-8081}:8080"
+    depends_on:
+      db:
+        condition: service_healthy
+
+volumes:
+  pgdata:

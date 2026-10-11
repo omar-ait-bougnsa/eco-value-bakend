@@ -167,7 +167,7 @@ def test_an_upload_is_made_from_the_file_and_only_once():
     ('prices.xlsx', b'not a workbook', 'could not be read as a .xlsx file'),
     ('prices.csv', b'', 'is empty'),
     ('prices.csv', b'   \n', 'could not be read as a .csv file'),
-    ('notes.txt', b'hello', 'only .xlsx and .csv files are accepted'),
+    ('photo.png', b'hello', 'only .xlsx, .csv, .pdf, .docx, .txt, .md files are accepted'),
     ('legacy.xls', b'\xd0\xcf\x11\xe0', 'save the workbook as .xlsx'),
     ('.csv', b'a,b\n1,2\n', 'has no file name'),
 ])

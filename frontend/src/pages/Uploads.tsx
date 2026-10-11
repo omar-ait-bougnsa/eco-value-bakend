@@ -9,8 +9,8 @@ import { dayLong } from '@/lib/format'
 import { useApp } from '@/store/app'
 import { cn } from '@/lib/utils'
 
-const TYPES = [['all', 'All'], ['prices', 'Prices'], ['freight', 'Freight'], ['agro', 'Agro tests'], ['crop', 'Crop prices']] as const
-const TL = { prices: 'Prices', freight: 'Freight', agro: 'Agro tests', crop: 'Crop prices' } as const
+const TYPES = [['all', 'All'], ['prices', 'Prices'], ['freight', 'Freight'], ['agro', 'Agro tests'], ['crop', 'Crop prices'], ['other', 'Documents']] as const
+const TL = { prices: 'Prices', freight: 'Freight', agro: 'Agro tests', crop: 'Crop prices', other: 'Document' } as const
 
 export default function Uploads() {
   const uploads = useApp((s) => s.uploads); const setUI = useApp((s) => s.setUI); const ui = useApp((s) => s.ui)
@@ -24,13 +24,13 @@ export default function Uploads() {
       <div className="hidden h-14 shrink-0 items-center border-b px-8 md:flex"><button aria-label="Toggle sidebar" onClick={() => setUI({ sidebarOpen: !ui.sidebarOpen })} title="Show or hide the sidebar" className="rounded-md border bg-background p-2 text-foreground hover:bg-accent"><PanelLeft className="size-4" /></button></div>
       <div className="mx-auto w-full max-w-[1280px] space-y-6 px-4 py-8 sm:px-8">
         <div className="flex flex-wrap items-center gap-3">
-          <div className="min-w-0 flex-1"><h1 className="text-[28px] font-semibold leading-9 tracking-tight">Uploads</h1><p className="mt-1 text-sm text-muted-foreground">Data the simulator reads. Freshness is checked on every run.</p></div>
+          <div className="min-w-0 flex-1"><h1 className="text-[28px] font-semibold leading-9 tracking-tight">Uploads</h1><p className="mt-1 text-sm text-muted-foreground">Data the simulator reads, and documents the assistant answers from. Freshness is checked on every run.</p></div>
           <Button className="gap-1.5" onClick={() => input.current?.click()}><UploadIcon className="size-4" />Upload document</Button>
-          <input ref={input} type="file" hidden accept=".xlsx,.csv" onChange={(e) => { const f = e.target.files?.[0]; if (f) openWith(f); e.target.value = '' }} />
+          <input ref={input} type="file" hidden accept=".xlsx,.csv,.pdf,.docx,.txt,.md" onChange={(e) => { const f = e.target.files?.[0]; if (f) openWith(f); e.target.value = '' }} />
         </div>
         {fresh.d1 && <FlagBanner flag={{ ...fresh.d1, title: `${fresh.d1.title}. ${fresh.d1.detail ?? ''}`, detail: undefined, action: { label: 'Upload newer prices', kind: 'dismiss' } }} onAction={() => openWith()} />}
         <button onClick={() => openWith()} className={cn('flex h-[84px] w-full items-center justify-center gap-3.5 rounded-xl border border-dashed bg-muted/60 transition-colors hover:bg-accent', drag && 'border-foreground bg-accent')}>
-          <UploadIcon className="size-5" /><span className="text-left"><span className="block text-sm font-medium">Drop a file here, or choose one</span><span className="block text-[13px] text-muted-foreground">.xlsx or .csv · Prices, freight, agro tests, crop prices — the type is detected automatically</span></span>
+          <UploadIcon className="size-5" /><span className="text-left"><span className="block text-sm font-medium">Drop a file here, or choose one</span><span className="block text-[13px] text-muted-foreground">Data (.xlsx, .csv): prices, freight, agro tests, crop prices · Documents (.pdf, .docx, .txt, .md): product sheets, reports — the assistant can answer from them</span></span>
         </button>
         <ToggleGroup type="single" value={t} onValueChange={(v) => v && setT(v)} variant="outline" size="sm" className="w-fit">
           {TYPES.map(([k, l]) => <ToggleGroupItem key={k} value={k} className="px-3 text-sm">{l} {uploads.filter((u) => k === 'all' || u.type === k).length}</ToggleGroupItem>)}

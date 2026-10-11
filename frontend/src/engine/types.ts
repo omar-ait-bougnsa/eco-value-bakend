@@ -166,7 +166,7 @@ export interface Run {
 export interface UploadFile {
   id: string
   name: string
-  type: 'prices' | 'freight' | 'agro' | 'crop'
+  type: 'prices' | 'freight' | 'agro' | 'crop' | 'other' // other: a document the assistant searches, used in no calculation
   uploadedAt: string
   fileDate: string
   dataThrough: string
@@ -176,4 +176,6 @@ export interface UploadFile {
   status?: 'active' | 'quarantined'
   /** On upload: this exact file was already there, and that record came back. */
   duplicate?: boolean
+  /** On upload: the document it became in the knowledge base. */
+  documentId?: string | null
 }

@@ -100,7 +100,7 @@ class Store:
         return UploadRecord.model_validate(row) if row is not None else None
 
     def add_upload(self, upload: UploadRecord) -> UploadRecord:
-        self.db.add(UploadRow(createdAt=now(), **upload.model_dump(exclude={'duplicate'})))
+        self.db.add(UploadRow(createdAt=now(), **upload.model_dump(exclude={'duplicate', 'documentId'})))
         self.db.commit()
         return upload
 
@@ -239,7 +239,7 @@ class Store:
         self.db.add_all(ProductRow(position=i, **p.model_dump()) for i, p in enumerate(seed.products()))
         self.db.add_all(SnapshotRow(position=i, **s.model_dump()) for i, s in enumerate(seed.SNAPSHOTS))
         loaded = datetime(seed.TODAY.year, seed.TODAY.month, seed.TODAY.day, tzinfo=timezone.utc)
-        self.db.add_all(UploadRow(createdAt=loaded - timedelta(seconds=i), **u.model_dump(exclude={'duplicate'})) for i, u in enumerate(seed.uploads()))
+        self.db.add_all(UploadRow(createdAt=loaded - timedelta(seconds=i), **u.model_dump(exclude={'duplicate', 'documentId'})) for i, u in enumerate(seed.uploads()))
         self.db.add(ParametersRow(id=1, **seed.default_params().model_dump()))
         self.db.flush()
         for id, title, created, over in (

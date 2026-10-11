@@ -282,9 +282,15 @@ async def run_agent_turn(
                                 )
                                 citations.update({r['ref']: r for r in tool_data['results']})
                             elif fn_name == 'get_product':
-                                tool_data, tool_facts, tool_events = tool_get_product(store, args['product'])
-                                for tf in tool_facts:
-                                    facts[tf.key] = tf
+                                try:
+                                    tool_data, tool_facts, tool_events = tool_get_product(store, args['product'])
+                                    for tf in tool_facts:
+                                        facts[tf.key] = tf
+                                except LookupError as missing:
+                                    # Not in the library: an uploaded document may describe it. Its passages come back instead, to be cited.
+                                    tool_data, _, tool_events = await asyncio.to_thread(tool_search_knowledge, store=store, query=f'{args["product"]} {user_text}', limit=3, first_ref=len(citations) + 1)
+                                    citations.update({r['ref']: r for r in tool_data.get('results', [])})
+                                    tool_data = {'note': f'{missing} It is not in the product library, so it cannot be priced. The passages below are what the uploaded documents say about it: answer from them and cite each with its ref, e.g. [K1].', **tool_data}
                             elif fn_name == 'list_products':
                                 tool_data, tool_facts, tool_events = tool_list_products(store)
                             elif fn_name == 'stage_change':
@@ -361,6 +367,9 @@ async def run_agent_turn(
                         elif 'anchor_price' not in facts and summaries:
                             # Not a pricing turn: what the tools themselves say, which needs no checking.
                             safe_text = '\n\n'.join(summaries)
+                        elif 'anchor_price' not in facts:
+                            # Nothing was priced and nothing was found: say so, rather than a pricing sentence with no figures in it.
+                            safe_text = 'I could not find that in the product library or in the uploaded documents, so I have nothing reliable to tell you about it.'
                         else:
                             safe_text = render_fallback_template(facts)
                         yield AgentEvent(id=_uid('text'), type='text', payload={'content': safe_text})

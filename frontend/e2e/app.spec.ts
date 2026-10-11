@@ -200,3 +200,22 @@ test('the rule-based assistant refuses what it does not know and offers what it 
   await expect(chat).toContainText('Raw-material cost: 655.18 USD/t')
   await expect(chat).toContainText('Composition: P2O5 46%')
 })
+
+test('a product document is uploaded, listed as a document, and the assistant answers from it', async ({ page }) => {
+  await page.goto('/uploads')
+  await page.locator('input[type=file]').first().setInputFiles({ name: 'phosfusion-80-20.md', mimeType: 'text/markdown', buffer: Buffer.from('# Phosfusion 80-20\n\nPhosfusion 80-20 is a pilot grade. It uses 0.12 t of sulphur per tonne and holds 21.5 % P2O5.\n') })
+  await expect(dialogs(page)).toContainText('Document') // detected: not price, freight, trial or crop data
+  await expect(dialogs(page)).toContainText('Assistant answers (document search)')
+  await dialogs(page).getByRole('button', { name: 'Use this data' }).click()
+  await expect(page.getByText('Document added')).toBeVisible()
+  const row = page.getByTestId('uploads-table').locator('tbody tr').filter({ hasText: 'phosfusion-80-20.md' })
+  await expect(row).toHaveCount(1)
+  await expect(row).toContainText('Document')
+
+  await page.goto('/')
+  await ask(page, 'give me information about product Phosfusion 80-20')
+  const chat = page.locator('#ask-ai')
+  await expect(chat).toContainText('That product is not in the product library')
+  await expect(chat).toContainText('0.12 t of sulphur per tonne')
+  await expect(chat).toContainText('Here is what the indexed documents say') // quoted from the file, with its source under it
+})

@@ -19,7 +19,7 @@ RefId = Literal['DAP', 'MAP', 'TSP']
 PriceType = Literal['low', 'high']
 CarbonMarket = Literal['voluntary', 'cbam']
 Family = Literal['phosfusion', 'reference', 'other']
-UploadType = Literal['prices', 'freight', 'agro', 'crop']
+UploadType = Literal['prices', 'freight', 'agro', 'crop', 'other']  # other: a document the assistant can search, used in no calculation
 FlagSeverity = Literal['error', 'warning', 'info', 'resolved']
 CreatedBy = Literal['user', 'agent']
 
@@ -203,13 +203,14 @@ class UploadRecord(UploadIn):
     status: RecordStatus = 'active'
     issues: list[str] = Field(default_factory=list)
     duplicate: bool = Field(False, description='On upload: this exact file was already there, and that record is returned')
+    documentId: Optional[str] = Field(None, description='On upload: the document it became in the knowledge base, which the assistant searches')
 
     @model_validator(mode='before')
     @classmethod
     def _stored(cls, v):
         if not isinstance(v, dict):
             v = {k: getattr(v, k, None) for k in cls.model_fields}
-        return {**v, 'status': v.get('status') or 'active', 'issues': v.get('issues') or [], 'duplicate': bool(v.get('duplicate'))}
+        return {**v, 'status': v.get('status') or 'active', 'issues': v.get('issues') or [], 'duplicate': bool(v.get('duplicate')), 'documentId': v.get('documentId')}
 
 
 class UploadDetection(Base):

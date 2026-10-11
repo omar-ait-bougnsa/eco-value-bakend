@@ -5,7 +5,9 @@ from typing import Optional
 import hashlib
 from pathlib import PurePath
 
-from fastapi import APIRouter, File, Query, Response, UploadFile
+from fastapi import APIRouter, BackgroundTasks, File, Query, Response, UploadFile
+
+from .. import rag
 
 from ..limits import FieldError, get_limits
 
@@ -17,14 +19,16 @@ from ..store import Store, StoreDep, uid
 
 router = APIRouter(tags=['Uploads'])
 
-TYPE_LABEL = {'prices': 'Prices', 'freight': 'Freight', 'agro': 'Agro tests', 'crop': 'Crop prices'}
+TYPE_LABEL = {'prices': 'Prices', 'freight': 'Freight', 'agro': 'Agro tests', 'crop': 'Crop prices', 'other': 'Document'}
 AFFECTS = {
     'prices': ['TSP FOB price', 'DAP FOB price', 'MAP FOB price'],
     'freight': ['Freight rates'],
     'agro': ['Yield gain', 'Application rate'],
     'crop': ['Crop price'],
+    'other': ['Assistant answers (document search)'],  # read by no calculation
 }
-ALLOWED = ('.xlsx', '.csv')  # a legacy .xls cannot be read here: it is refused with a way out, not stored unread
+TABLES = ('.xlsx', '.csv')  # data files: rows are read from them
+ALLOWED = (*TABLES, '.pdf', '.docx', '.txt', '.md')  # and documents, which the assistant searches. A legacy .xls cannot be read: it is refused with a way out
 
 
 def _date_in(name: str) -> date:
@@ -49,11 +53,19 @@ def list_uploads(type: Optional[UploadType] = None, include_quarantined: bool = 
 
 
 def _read(name: str, data: bytes) -> list[tuple[Optional[str], list[list[str]]]]:
-    """The tables of the file as (sheet, rows). Empty when it cannot be read (a legacy .xls, a damaged file)."""
+    """The tables of the file as (sheet, rows). Empty when it has none, or cannot be read (a legacy .xls, a damaged file)."""
     try:
         return [(b.section, b.rows) for b in parse(name, data).blocks if b.rows]
     except (UnsupportedFile, UnreadableFile):
         return []
+
+
+def _blocks(name: str, data: bytes) -> int:
+    """How many pieces of text or tables the file has. 0 when it cannot be read."""
+    try:
+        return len(parse(name, data).blocks)
+    except (UnsupportedFile, UnreadableFile):
+        return 0
 
 
 def _latest_date(tables) -> Optional[date]:
@@ -90,7 +102,8 @@ def _inverted_quote(tables) -> Optional[str]:
 
 
 def _type(name: str, tables) -> UploadType:
-    """From the words of the file name, then of its column headers. Prices when neither says."""
+    """From the words of the file name, then of its column headers. A file that is neither prices, freight, trials nor
+    crop prices is a document: searched by the assistant, used in no calculation."""
     for text in (name.lower(), ' '.join(c.lower() for _, rows in tables for c in rows[0])):
         if re.search('freight|route|vessel|cargo', text):
             return 'freight'
@@ -100,7 +113,7 @@ def _type(name: str, tables) -> UploadType:
             return 'crop'
         if re.search(r'price|argus|fob|quote|\blow\b', text):
             return 'prices'
-    return 'prices'
+    return 'other'
 
 
 def _review(store: Store, name: str, data: bytes) -> tuple[UploadDetection, list[tuple[str, str]]]:
@@ -110,16 +123,18 @@ def _review(store: Store, name: str, data: bytes) -> tuple[UploadDetection, list
     if not re.sub(r'\.(xlsx|xls|csv)$', '', name, flags=re.I).strip(' .'):
         problems.append(('file', 'has no file name'))
     if not name.lower().endswith(ALLOWED):
-        problems.append(('file', 'only .xlsx and .csv files are accepted' + (': save the workbook as .xlsx' if name.lower().endswith('.xls') else '')))
+        problems.append(('file', f'only {", ".join(ALLOWED)} files are accepted' + (': save the workbook as .xlsx' if name.lower().endswith('.xls') else '')))
     size = len(data)
     if size == 0:
         problems.append(('file', 'is empty'))
     elif size > get_limits().uploadMaxBytes:
         problems.append(('file', f'is larger than {get_limits().uploadMaxBytes / 1e6:g} MB'))
     tables = [] if problems else _read(name, data)
-    if not problems and not tables:
-        problems.append(('file', f'could not be read as a {PurePath(name).suffix.lower()} file with rows: it is damaged, or not what its extension says'))
-    type = _type(name, tables)
+    blocks = 0 if problems else _blocks(name, data)
+    if not problems and not blocks:
+        problems.append(('file', f'could not be read as a {PurePath(name).suffix.lower()} file: it is damaged, empty, or not what its extension says'))
+    # Only a file with rows can be data for the calculations.
+    type = _type(name, tables) if tables else 'other'
     argus = type == 'prices' and 'argus' in name.lower()
     d = _date_in(name)
     through = _latest_date(tables) or d
@@ -134,7 +149,7 @@ def _review(store: Store, name: str, data: bytes) -> tuple[UploadDetection, list
         typeLabel=('Prices — Argus FOB Morocco' if argus else 'Prices') if type == 'prices' else TYPE_LABEL[type],
         fileDate=d, dataThrough=through,
         # What was read: nothing is claimed about a file that could not be opened.
-        series=(f'{rows} row{"" if rows == 1 else "s"}' + (f' · {len(sheets)} sheet{"" if len(sheets) == 1 else "s"}: {", ".join(sheets[:4])}' if sheets else '')) if tables else 'Not read',
+        series=(f'{rows} row{"" if rows == 1 else "s"}' + (f' · {len(sheets)} sheet{"" if len(sheets) == 1 else "s"}: {", ".join(sheets[:4])}' if sheets else '')) if tables else f'{blocks} section{"" if blocks == 1 else "s"} of text' if blocks else 'Not read',
         affects=AFFECTS[type],
         resolves=not problems and 'D1' in _flags(store, current) and 'D1' not in _flags(store, [candidate, *current]),
         warn=_inverted_quote(tables) if tables else None,
@@ -145,13 +160,13 @@ def _review(store: Store, name: str, data: bytes) -> tuple[UploadDetection, list
 
 
 @router.post('/uploads/detect', response_model=UploadDetection, summary='Review a file before using it: what was read from it, and what stops it from being used')
-def detect(file: UploadFile = File(description='.xlsx or .csv'), store: Store = StoreDep):
+def detect(file: UploadFile = File(description='.xlsx, .csv, .pdf, .docx, .txt or .md'), store: Store = StoreDep):
     """Nothing is saved. `problems` lists why the file would be refused; `duplicateOf` is the upload that already holds this exact file."""
     return _review(store, file.filename or '', file.file.read())[0]
 
 
 @router.post('/uploads', response_model=UploadRecord, status_code=201, summary='Use a file in simulations. The same file sent again returns the upload it already is (200)')
-def create_upload(response: Response, file: UploadFile = File(description='.xlsx or .csv'), store: Store = StoreDep):
+def create_upload(response: Response, background: BackgroundTasks, file: UploadFile = File(description='.xlsx, .csv, .pdf, .docx, .txt or .md'), store: Store = StoreDep):
     """The record is made from the file itself: its name, what was read from it and its SHA-256. A file that cannot be read is refused."""
     data = file.file.read()
     found, problems = _review(store, file.filename or '', data)
@@ -164,10 +179,16 @@ def create_upload(response: Response, file: UploadFile = File(description='.xlsx
         store.db.commit()
         response.status_code = 200
         return existing.model_copy(update={'duplicate': True})
-    return store.add_upload(UploadRecord(
+    saved = store.add_upload(UploadRecord(
         id=uid('u'), uploadedAt=date.today(), name=found.name, type=found.type, fileDate=found.fileDate, dataThrough=found.dataThrough,
         detail=found.series, sizeBytes=len(data), contentHash=digest,
     ))
+    # The same step puts the file in the knowledge base, so the assistant can answer from it: it does not depend on a
+    # second request from the browser. Its embeddings are computed after the response.
+    doc = rag.add_document(store.db, found.name, data, upload_id=saved.id)
+    if doc.status != 'ready':
+        background.add_task(rag.embed_in_background, doc.id)
+    return saved.model_copy(update={'documentId': doc.id})
 
 
 @router.get('/uploads/freshness', response_model=Freshness, summary='Latest upload and the data-freshness flags (D1 prices vs freight gap, D2 stale uploads)')
